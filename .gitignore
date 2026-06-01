@@ -1,0 +1,33 @@
+# Python
+backend/.venv/
+backend/.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Local runtime data
+backend/data/
+data/
+logs/
+*.log
+
+# Local secrets
+backend/.env
+frontend/.env.local
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.local.example
+
+# Frontend build and dependencies
+frontend/.next/
+frontend/node_modules/
+frontend/out/
+frontend/build/
+
+# Large local bioinformatics tools/databases
+tools/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
