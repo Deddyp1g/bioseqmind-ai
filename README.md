@@ -76,6 +76,8 @@ Windows/GPU 迁移说明见 [docs/windows-gpu-migration.md](docs/windows-gpu-mig
 
 运行模式、宿主机接手、快速模式和旧版完整 geNomad 模式说明见 [docs/deployment-modes.md](docs/deployment-modes.md)。
 
+详细系统设计、技术架构、分析工作流、安全边界、测试验证和后续路线见 [docs/design-and-technical-report.md](docs/design-and-technical-report.md)。
+
 ## 开源内容说明
 
 仓库不会包含本地密钥、SQLite 结果库、geNomad 数据库、虚拟环境、Node 依赖、Next 构建产物和 MMseqs2 二进制。首次接手请按文档复制示例环境文件并重新下载数据库。

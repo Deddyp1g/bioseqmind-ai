@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,8 @@ from app.services.errors import ExternalDependencyError
 from app.services.pipeline import run_analysis
 from app.services.sequence import SequenceValidationError
 
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
@@ -58,19 +61,33 @@ def list_analyses() -> list[dict[str, object]]:
 @app.post("/api/analyses", response_model=AnalysisResult)
 async def create_analysis(
     sequence_text: str = Form(default=""),
+    analysis_mode: str = Form(default="fast_nn"),
+    deepseek_precheck: bool = Form(default=False),
     file: UploadFile | None = File(default=None),
 ) -> AnalysisResult:
     payload = sequence_text
     if file is not None:
         payload = (await file.read()).decode("utf-8")
+    logger.info(
+        "analysis request received: mode=%s, deepseek_precheck=%s, has_file=%s, payload_length=%s",
+        analysis_mode,
+        deepseek_precheck,
+        file is not None,
+        len(payload.strip()),
+    )
     try:
-        settings = get_settings()
+        if analysis_mode not in {"fast_nn", "end_to_end"}:
+            logger.warning("analysis rejected: invalid analysis_mode=%s", analysis_mode)
+            raise HTTPException(status_code=422, detail="analysis_mode must be fast_nn or end_to_end")
+        settings = get_settings().model_copy(update={"genomad_mode": analysis_mode})
         repo = _repository()
         repo.init()
-        return await run_analysis(payload, settings, repo)
+        return await run_analysis(payload, settings, repo, deepseek_precheck=deepseek_precheck)
     except SequenceValidationError as exc:
+        logger.warning("analysis rejected: sequence validation failed: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ExternalDependencyError as exc:
+        logger.exception("analysis failed: external dependency error")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

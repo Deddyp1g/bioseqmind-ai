@@ -57,6 +57,22 @@ class AnalysisRepository:
             return None
         return AnalysisResult.model_validate_json(row["payload"])
 
+    def find_completed_by_sequence(self, sequence: str) -> AnalysisResult | None:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload
+                FROM analyses
+                WHERE status = 'completed'
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
+        for row in rows:
+            analysis = AnalysisResult.model_validate_json(row["payload"])
+            if analysis.sequence.sequence == sequence:
+                return analysis
+        return None
+
     def list_recent(self, limit: int = 20) -> list[dict[str, object]]:
         with self._connect() as conn:
             rows = conn.execute(

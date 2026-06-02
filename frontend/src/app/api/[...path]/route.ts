@@ -7,7 +7,7 @@ export const maxDuration = 900;
 const BACKEND_API_BASE = (process.env.BIOSEQMIND_BACKEND_INTERNAL_URL ?? "http://127.0.0.1:8008/api").replace(/\/$/, "");
 
 type RouteContext = {
-  params: Promise<{ path: string[] }> | { path: string[] };
+  params: Promise<{ path: string[] }>;
 };
 
 async function proxyToBackend(request: NextRequest, context: RouteContext): Promise<Response> {

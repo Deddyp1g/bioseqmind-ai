@@ -1,8 +1,38 @@
+import json
+import re
+
 import httpx
 
 from app.config import Settings
 from app.models.analysis import AnalysisResult, BlastHit, FusionResult, GenomadPrediction, ReportResult, SequenceStats
 from app.services.errors import ExternalDependencyError
+from app.services.sequence import SequenceValidationError, parse_sequence, to_fasta
+
+
+async def normalize_sequence_input(payload: str, settings: Settings) -> tuple[str, str]:
+    if not settings.deepseek_api_key:
+        raise ExternalDependencyError("未配置 DEEPSEEK_API_KEY，无法执行 DeepSeek 输入格式预检。")
+
+    try:
+        content = await _call_deepseek(_normalization_prompt(payload), settings)
+    except Exception as exc:
+        raise ExternalDependencyError(f"DeepSeek 输入格式预检失败: {exc}") from exc
+
+    decision = _parse_normalization_json(content)
+    accepted = bool(decision.get("accept"))
+    reason = str(decision.get("reason") or "").strip()
+    corrected_fasta = str(decision.get("corrected_fasta") or "").strip()
+
+    if not accepted:
+        raise SequenceValidationError(reason or "输入内容与 DNA/RNA/FASTA 格式相差过多，已拒绝分析。")
+    if not corrected_fasta:
+        raise SequenceValidationError("DeepSeek 未返回可用的规范化 FASTA 序列。")
+
+    try:
+        stats = parse_sequence(corrected_fasta)
+    except SequenceValidationError as exc:
+        raise SequenceValidationError(f"DeepSeek 规范化后仍不是有效 DNA/RNA 序列: {exc}") from exc
+    return to_fasta(stats), reason or "DeepSeek 已完成输入格式预检。"
 
 
 async def generate_report(
@@ -58,6 +88,46 @@ async def _call_deepseek(prompt: str, settings: Settings) -> str:
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
+
+
+def _parse_normalization_json(content: str) -> dict[str, object]:
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            raise SequenceValidationError("DeepSeek 输入格式预检未返回 JSON。")
+        data = json.loads(match.group(0))
+    if not isinstance(data, dict):
+        raise SequenceValidationError("DeepSeek 输入格式预检返回格式无效。")
+    return data
+
+
+def _normalization_prompt(payload: str) -> str:
+    sample = payload[:12000]
+    return f"""
+你是 BioSeqMind-AI 的核酸序列输入预检器，只做格式判断和轻微格式修复，不做物种结论。
+
+任务：
+1. 判断输入是否主要是 DNA/RNA/FASTA 序列。
+2. 如果只是少量格式问题，请修复为单条 FASTA，例如补充 header、移除空格、把字面量 \\n 变成真实换行、去掉行号或无关标点。
+3. 如果输入与核酸序列格式相差过多，或大段是网页、论文、聊天文本、蛋白序列、随机字符，请拒绝。
+4. 不允许凭空补充未知碱基；不确定位置只能保留 N。允许字符仅为 A/T/G/C/U/N。
+
+只返回 JSON，不要 Markdown，不要解释性正文：
+{{
+  "accept": true,
+  "corrected_fasta": ">sequence_name\\nATGC...",
+  "reason": "一句中文说明你修复了什么，或为什么拒绝"
+}}
+
+输入：
+{sample}
+""".strip()
 
 
 def _report_prompt(

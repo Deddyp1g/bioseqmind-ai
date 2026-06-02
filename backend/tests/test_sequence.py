@@ -23,6 +23,13 @@ def test_parse_plain_rna_sequence_detects_rna():
     assert parsed.gc_content == 50.0
 
 
+def test_parse_fasta_with_escaped_newlines():
+    parsed = parse_sequence(">escaped\\nATGCATGC\\n")
+
+    assert parsed.name == "escaped"
+    assert parsed.sequence == "ATGCATGC"
+
+
 def test_parse_sequence_rejects_invalid_characters():
     with pytest.raises(SequenceValidationError) as exc:
         parse_sequence(">bad\nATGCXYZ")

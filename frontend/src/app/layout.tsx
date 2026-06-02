@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import "@fontsource/noto-sans-sc/chinese-simplified-400.css";
-import "@fontsource/noto-sans-sc/chinese-simplified-600.css";
-import "@fontsource/noto-sans-sc/chinese-simplified-700.css";
 import "./globals.css";
 
 const geistSans = Geist({

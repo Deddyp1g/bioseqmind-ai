@@ -44,6 +44,7 @@ def to_fasta(stats: SequenceStats) -> str:
 
 
 def _read_fasta_or_plain(payload: str) -> tuple[str, str]:
+    payload = payload.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
     lines = [line.strip() for line in payload.strip().splitlines() if line.strip()]
     if not lines:
         return "Pasted sequence", ""
