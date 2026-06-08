@@ -49,12 +49,36 @@ function Resolve-PythonCommand {
   throw "No usable Python interpreter found. Install Python 3.9+ and ensure py.exe or python.exe is on PATH."
 }
 
-if (-not (Test-Path (Join-Path $Backend ".venv"))) {
+function Test-Venv {
+  param([string]$Path)
+
+  return (
+    (Test-Path (Join-Path $Path "pyvenv.cfg")) -and
+    (Test-Path (Join-Path $Path "Scripts\python.exe"))
+  )
+}
+
+function Stop-Port {
+  param([int]$Port)
+
+  Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique |
+    ForEach-Object {
+      Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$Venv = Join-Path $Backend ".venv"
+if (-not (Test-Venv $Venv)) {
+  if (Test-Path $Venv) {
+    Remove-Item -LiteralPath $Venv -Recurse -Force
+  }
   $python = Resolve-PythonCommand
-  & $python.Exe @($python.Args + @("-m", "venv", (Join-Path $Backend ".venv")))
+  & $python.Exe @($python.Args + @("-m", "venv", $Venv))
 }
 
 & (Join-Path $Backend ".venv\Scripts\python.exe") -m pip install -r (Join-Path $Backend "requirements.txt")
+& (Join-Path $Backend ".venv\Scripts\python.exe") -c "import fastapi, uvicorn, httpx, pydantic_settings"
 
 if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
   Push-Location $Frontend
@@ -62,19 +86,24 @@ if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
   Pop-Location
 }
 
+npm.cmd run build --prefix $Frontend
+
+Stop-Port 8008
+Stop-Port 5174
+
 Start-Process -FilePath (Join-Path $Backend ".venv\Scripts\python.exe") `
   -ArgumentList "-m uvicorn app.main:app --host 0.0.0.0 --port 8008" `
   -WorkingDirectory $Backend `
   -RedirectStandardOutput (Join-Path $Logs "backend.log") `
-  -RedirectStandardError (Join-Path $Logs "backend.err.log")
+  -RedirectStandardError (Join-Path $Logs "backend.err.log") `
+  -WindowStyle Hidden
 
-npm.cmd run build --prefix $Frontend
-
-Start-Process -FilePath "npm" `
+Start-Process -FilePath "npm.cmd" `
   -ArgumentList "run start" `
   -WorkingDirectory $Frontend `
   -RedirectStandardOutput (Join-Path $Logs "frontend.log") `
-  -RedirectStandardError (Join-Path $Logs "frontend.err.log")
+  -RedirectStandardError (Join-Path $Logs "frontend.err.log") `
+  -WindowStyle Hidden
 
 Write-Host "BioSeqMind-AI started"
 Write-Host "Frontend: http://localhost:5174"

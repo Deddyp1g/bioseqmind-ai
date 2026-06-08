@@ -1,5 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "@fontsource/noto-sans-sc/chinese-simplified-400.css";
+@import "@fontsource/noto-sans-sc/chinese-simplified-500.css";
+@import "@fontsource/noto-sans-sc/chinese-simplified-600.css";
+@import "@fontsource/noto-sans-sc/chinese-simplified-700.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -48,7 +52,8 @@
 }
 
 :root {
-  --font-ui-sans: var(--font-geist-sans), "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei", Arial, sans-serif;
+  --font-ui-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "WenQuanYi Micro Hei", Arial, sans-serif;
+  --font-geist-mono: "Cascadia Code", "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
   --background: oklch(0.12 0.018 205);
   --foreground: oklch(0.93 0.015 190);
   --card: oklch(0.17 0.022 205);
@@ -136,4 +141,208 @@
 svg {
   width: 1rem;
   height: 1rem;
+}
+
+@keyframes grid-pan {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 44px 44px, 44px 44px;
+  }
+}
+
+@keyframes scan-y {
+  0% {
+    transform: translateY(-120%);
+    opacity: 0;
+  }
+  16% {
+    opacity: 0.8;
+  }
+  84% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: translateY(120%);
+    opacity: 0;
+  }
+}
+
+@keyframes edge-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes helix-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(-16px, 18px, 0) rotate(2deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+}
+
+@keyframes strand-pulse {
+  0%, 100% {
+    opacity: 0.2;
+    filter: blur(0);
+  }
+  50% {
+    opacity: 0.72;
+    filter: blur(0.4px);
+  }
+}
+
+@keyframes seq-rise {
+  0%, 100% {
+    transform: scaleY(0.72);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes node-breathe {
+  0%, 100% {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 rgba(104, 240, 207, 0);
+  }
+  50% {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 28px rgba(104, 240, 207, 0.16);
+  }
+}
+
+@keyframes reveal-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lab-shell {
+  text-rendering: geometricPrecision;
+}
+
+.motion-grid {
+  animation: grid-pan 26s linear infinite;
+}
+
+.holo-panel {
+  position: relative;
+  overflow: hidden;
+  animation: reveal-up 420ms ease both;
+}
+
+.holo-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+.holo-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 18%),
+    linear-gradient(120deg, transparent, rgba(104, 240, 207, 0.08), transparent 42%);
+  opacity: 0.7;
+}
+
+.holo-panel::after {
+  content: "";
+  position: absolute;
+  left: -30%;
+  right: -30%;
+  top: 0;
+  z-index: 2;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(104, 240, 207, 0.95), rgba(255, 209, 102, 0.65), transparent);
+  animation: edge-sweep 3.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.interactive-panel {
+  transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+}
+
+.interactive-panel:hover {
+  transform: translateY(-2px);
+  border-color: rgba(104, 240, 207, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 28px 90px rgba(0, 0, 0, 0.34), 0 0 38px rgba(104, 240, 207, 0.08);
+}
+
+.cinema-scanline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.cinema-scanline::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 44%;
+  background: linear-gradient(180deg, transparent, rgba(104, 240, 207, 0.14), transparent);
+  animation: scan-y 5.4s ease-in-out infinite;
+}
+
+.helix-field {
+  animation: helix-drift 14s ease-in-out infinite;
+}
+
+.helix-strand {
+  animation: strand-pulse 3.8s ease-in-out infinite;
+}
+
+.seq-bar {
+  transform-origin: bottom;
+  animation: seq-rise 2.6s ease-in-out infinite;
+}
+
+.energy-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.energy-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 20%, rgba(255, 255, 255, 0.44), transparent 62%);
+  transform: translateX(-130%);
+  transition: transform 520ms ease;
+}
+
+.energy-button:hover::after {
+  transform: translateX(130%);
+}
+
+.running-node {
+  animation: node-breathe 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
 }
