@@ -15,6 +15,7 @@ backups/
 *.db
 *.sqlite
 *.sqlite3
+docs/course_paper_work/
 
 # Local secrets
 backend/.env

@@ -2,37 +2,32 @@
 
 import type { ChangeEvent, FormEvent, ReactNode, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import * as THREE from "three";
 import {
   Activity,
   AlertTriangle,
-  ArrowUpRight,
-  BadgeCheck,
   BarChart3,
   Bot,
-  CheckCircle2,
-  ChevronRight,
+  BrainCircuit,
+  Check,
   Clock3,
-  Cpu,
   Database,
   Dna,
   Download,
   FileText,
   Gauge,
-  Home,
   Layers3,
   Loader2,
   MessageSquare,
   Microscope,
   Network,
   Play,
-  Radar,
-  RotateCw,
-  Search,
+  RefreshCw,
   Server,
-  ShieldCheck,
   Sparkles,
+  TerminalSquare,
   Upload,
-  Workflow,
   Zap,
 } from "lucide-react";
 
@@ -49,35 +44,40 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { askAnalysis, createAnalysis, fetchDashboard, reportDownloadUrl, type AnalysisMode } from "@/lib/api";
-import type { AnalysisResult, ChatResponse, DashboardStats, PipelineStep } from "@/lib/types";
+import {
+  askAnalysis,
+  createAnalysis,
+  fetchDashboard,
+  reportDownloadUrl,
+  type AnalysisMode,
+} from "@/lib/api";
+import type { AnalysisResult, ChatResponse, DashboardStats } from "@/lib/types";
 import { BaseCompositionChart, BlastRankingChart, ConfidenceGauge } from "./charts";
 
-type ViewId = "dashboard" | "upload" | "progress" | "overview" | "charts" | "report";
+type AtlasView = "evidence" | "charts" | "report" | "ops";
 
-const navItems: Array<{ id: ViewId; label: string; eyebrow: string; icon: typeof Home }> = [
-  { id: "upload", label: "序列控制台", eyebrow: "Input", icon: Upload },
-  { id: "progress", label: "任务链路", eyebrow: "Run", icon: Workflow },
-  { id: "overview", label: "证据总览", eyebrow: "Evidence", icon: Gauge },
-  { id: "charts", label: "图谱分析", eyebrow: "Charts", icon: BarChart3 },
-  { id: "report", label: "AI 报告", eyebrow: "Report", icon: Bot },
-  { id: "dashboard", label: "运行看板", eyebrow: "Ops", icon: Home },
+const sampleSequenceUrl = "/samples/sequence.fasta";
+
+const atlasViews: Array<{ id: AtlasView; label: string; icon: LucideIcon }> = [
+  { id: "evidence", label: "Evidence", icon: Network },
+  { id: "charts", label: "Charts", icon: BarChart3 },
+  { id: "report", label: "Report", icon: Bot },
+  { id: "ops", label: "Ops", icon: Activity },
 ];
 
-const pipelineBlueprint = [
-  { key: "input_precheck", label: "DeepSeek 预检", icon: Sparkles },
-  { key: "sequence", label: "序列质控", icon: Dna },
-  { key: "genomad", label: "geNomad", icon: Radar },
-  { key: "ncbi", label: "NCBI BLAST", icon: Database },
-  { key: "fusion", label: "证据融合", icon: Layers3 },
-  { key: "deepseek", label: "AI 解释", icon: Bot },
-  { key: "report", label: "报告生成", icon: FileText },
+const pipelineBlueprint: Array<{ key: string; label: string; tag: string; icon: LucideIcon }> = [
+  { key: "input_precheck", label: "输入预检", tag: "00", icon: Sparkles },
+  { key: "sequence", label: "序列质控", tag: "01", icon: Dna },
+  { key: "genomad", label: "geNomad", tag: "02", icon: Microscope },
+  { key: "ncbi", label: "NCBI BLAST", tag: "03", icon: Database },
+  { key: "fusion", label: "证据融合", tag: "04", icon: Layers3 },
+  { key: "deepseek", label: "AI 解释", tag: "05", icon: BrainCircuit },
+  { key: "report", label: "报告生成", tag: "06", icon: FileText },
 ];
-
-const sampleSequence = ">BioSeqMind_demo_sequence\nATGCGTACGTTAGCTAGCTAGGCTTACGATCGATCGGATCCGATCGTACGATCGATCGTACG";
 
 export function BioSeqMindWorkbench() {
-  const [activeView, setActiveView] = useState<ViewId>("upload");
+  const [enteredLab, setEnteredLab] = useState(false);
+  const [atlasView, setAtlasView] = useState<AtlasView>("evidence");
   const [sequenceText, setSequenceText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("fast_nn");
@@ -86,55 +86,21 @@ export function BioSeqMindWorkbench() {
   const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState("");
-  const [question, setQuestion] = useState("geNomad 和 BLAST 的证据是否一致？");
+  const [question, setQuestion] = useState("本次 geNomad 和 BLAST 的证据是否一致？");
   const [chat, setChat] = useState<Array<{ role: "user" | "assistant"; content: string; meta?: string }>>([]);
   const [isAsking, setIsAsking] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const sequenceRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    fetchDashboard()
-      .then(setDashboard)
-      .catch(() => setDashboard({ total_analyses: 0, average_confidence: 0, recent: [] }));
+    void refreshDashboard();
   }, []);
 
-  const normalizedInputLength = sequenceText.replace(/\s/g, "").replace(/^>.*$/gm, "").length;
+  const signal = useMemo(() => inspectSequence(sequenceText), [sequenceText]);
   const topHit = analysis?.blast_hits[0] ?? null;
-  const completedSteps = analysis?.timeline.length ?? 0;
-
-  const metrics = useMemo(
-    () => [
-      {
-        label: "任务总量",
-        value: dashboard?.total_analyses ?? 0,
-        suffix: "runs",
-        icon: Activity,
-        tone: "text-[#68f0cf]",
-      },
-      {
-        label: "平均可信度",
-        value: Math.round(dashboard?.average_confidence ?? analysis?.fusion.confidence_score ?? 0),
-        suffix: "%",
-        icon: Gauge,
-        tone: "text-[#ffd166]",
-      },
-      {
-        label: "当前长度",
-        value: analysis?.sequence.length ?? normalizedInputLength,
-        suffix: "nt",
-        icon: Dna,
-        tone: "text-[#86b7ff]",
-      },
-      {
-        label: "BLAST 命中",
-        value: analysis?.blast_hits.length ?? 0,
-        suffix: "hits",
-        icon: Database,
-        tone: "text-[#ff8fb3]",
-      },
-    ],
-    [analysis, dashboard, normalizedInputLength],
-  );
+  const composition = analysis?.sequence.base_ratios ?? signal.ratios;
+  const runState = isAnalyzing ? "Sequencing" : analysis ? "Resolved" : signal.length ? "Armed" : "Standby";
+  const atlasInHero = isAnalyzing || Boolean(analysis);
 
   async function refreshDashboard() {
     try {
@@ -149,12 +115,10 @@ export function BioSeqMindWorkbench() {
     setError("");
     const submittedSequence = sequenceText.trim() ? sequenceText : (sequenceRef.current?.value ?? "");
     if (!file && !submittedSequence.trim()) {
-      setError("请输入 DNA/RNA 序列或上传 FASTA 文件。");
-      setActiveView("upload");
+      setError("请先输入 DNA/RNA 序列，或上传 FASTA 文件。");
       return;
     }
     setIsAnalyzing(true);
-    setActiveView("progress");
     try {
       const result = await createAnalysis(submittedSequence, file, analysisMode, deepseekPrecheck);
       setAnalysis(result);
@@ -166,10 +130,9 @@ export function BioSeqMindWorkbench() {
         },
       ]);
       await refreshDashboard();
-      setActiveView("overview");
+      setAtlasView("evidence");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "分析失败");
-      setActiveView("upload");
     } finally {
       setIsAnalyzing(false);
     }
@@ -190,9 +153,16 @@ export function BioSeqMindWorkbench() {
     }
   }
 
-  function handleSequenceText(value: string) {
-    setSequenceText(value);
-    if (error) setError("");
+  async function handleSampleSequence() {
+    setFile(null);
+    setError("");
+    try {
+      const response = await fetch(sampleSequenceUrl, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setSequenceText(await response.text());
+    } catch {
+      setError("样例 FASTA 文件读取失败，请检查 public/samples/sequence.fasta。");
+    }
   }
 
   async function handleQuestion() {
@@ -217,468 +187,928 @@ export function BioSeqMindWorkbench() {
     }
   }
 
-  function navigate(view: ViewId) {
-    setError("");
-    setActiveView(view);
+  if (!enteredLab) {
+    return <LandingPortal onEnter={() => setEnteredLab(true)} />;
   }
 
   return (
-    <div className="lab-shell min-h-screen bg-[#090a0a] text-[#eef7f2]">
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute inset-0 bg-[linear-gradient(180deg,#090a0a_0%,#10100d_44%,#080807_100%)]" />
-        <div className="motion-grid absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.03)_1px,transparent_1px)] bg-[size:44px_44px]" />
-        <div className="absolute inset-x-0 top-0 h-72 bg-[linear-gradient(180deg,rgba(101,240,207,.12),transparent)]" />
-        <DnaBackdrop />
-      </div>
+    <div className="cinema-shell min-h-screen bg-[#050706] text-[#edf8f2]">
+      <CinematicBackdrop />
+      <main className="cinema-page">
+        <section className="cinema-hero">
+          <TopConstellation
+            analysisMode={analysisMode}
+            isAnalyzing={isAnalyzing}
+            onAnalyze={() => void handleAnalyze()}
+            onMode={setAnalysisMode}
+          />
 
-      <div className="flex min-h-screen">
-        <aside className="hidden w-[296px] shrink-0 border-r border-white/10 bg-[#0c0d0b]/90 px-4 py-5 backdrop-blur-2xl">
-          <BrandLockup />
-          <div className="mt-7 space-y-2">
-            {navItems.map((item) => (
-              <NavButton key={item.id} item={item} selected={activeView === item.id} onClick={() => navigate(item.id)} />
-            ))}
-          </div>
-          <div className="mt-7 border-t border-white/10 pt-5">
-            <PipelineMini analysis={analysis} isAnalyzing={isAnalyzing} />
-          </div>
-        </aside>
+          <form className="sequence-vessel" onSubmit={handleAnalyze}>
+            <SequenceCapsule
+              deepseekPrecheck={deepseekPrecheck}
+              file={file}
+              fileRef={fileRef}
+              isAnalyzing={isAnalyzing}
+              sequenceRef={sequenceRef}
+              sequenceText={sequenceText}
+              signal={signal}
+              onDeepseekPrecheck={setDeepseekPrecheck}
+              onFile={handleFile}
+              onSample={() => void handleSampleSequence()}
+              onSequenceText={(value) => {
+                setSequenceText(value);
+                if (error) setError("");
+              }}
+            />
+          </form>
 
-        <main className="min-w-0 flex-1">
-          <header className="sticky top-0 z-30 border-b border-white/10 bg-[#090a0a]/82 backdrop-blur-2xl">
-            <div className="px-4 py-4 lg:px-7">
-              <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
-                <div className="min-w-0">
-                  <div className="mb-3 flex items-center gap-2">
-                    <BrandMark />
-                    <span className="text-sm font-semibold text-white">BioSeqMind-AI</span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.22em] text-[#9bb2aa]">
-                    <span>Bioinformatics Command Surface</span>
-                    <span className="h-px w-8 bg-[#68f0cf]/50" />
-                    <span>{analysis ? formatDate(analysis.created_at) : "Live Input"}</span>
-                  </div>
-                  <h1 className="mt-2 max-w-5xl text-2xl font-semibold leading-tight tracking-normal text-white md:text-4xl">
-                    核酸序列智能识别与证据融合工作台
-                  </h1>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <StatusPill icon={Server} label="API" value="Ready" tone="green" />
-                  <StatusPill icon={Cpu} label="Mode" value={analysisMode === "fast_nn" ? "Fast NN" : "End-to-end"} tone="amber" />
-                  <Button
-                    className="energy-button h-10 rounded-[8px] bg-[#68f0cf] px-4 text-[#07100d] shadow-[0_0_0_1px_rgba(104,240,207,.25),0_18px_50px_rgba(104,240,207,.16)] hover:bg-[#8ff8dd]"
-                    disabled={isAnalyzing}
-                    onClick={() => {
-                      if (activeView === "upload") {
-                        void handleAnalyze();
-                      } else {
-                        navigate("upload");
-                      }
-                    }}
-                    type="button"
-                  >
-                    {isAnalyzing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Play data-icon="inline-start" />}
-                    {activeView === "upload" ? "启动分析" : "进入控制台"}
-                  </Button>
-                </div>
-              </div>
+          {atlasInHero ? (
+            <HeroAtlas
+              active={atlasView}
+              analysis={analysis}
+              chat={chat}
+              dashboard={dashboard}
+              isAsking={isAsking}
+              question={question}
+              onActive={setAtlasView}
+              onAsk={handleQuestion}
+              onQuestion={setQuestion}
+              onRefreshDashboard={refreshDashboard}
+            />
+          ) : (
+            <HelixSpectacle
+              analysis={analysis}
+              composition={composition}
+              isAnalyzing={isAnalyzing}
+              runState={runState}
+              signal={signal}
+            />
+          )}
 
-              <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
-                {navItems.map((item) => {
-                  const Icon = item.icon;
-                  const selected = activeView === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      className={`flex h-10 shrink-0 items-center gap-2 rounded-[8px] border px-4 text-sm transition ${
-                        selected
-                          ? "border-[#e7d8b1]/45 bg-[#e7d8b1]/10 text-white shadow-[inset_0_1px_0_rgba(255,255,255,.08)]"
-                          : "border-white/10 bg-white/[0.035] text-[#a7b8b0] hover:border-white/20 hover:text-white"
-                      }`}
-                      onClick={() => navigate(item.id)}
-                      type="button"
-                    >
-                      <Icon />
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </header>
+          <EvidenceLens analysis={analysis} dashboard={dashboard} signal={signal} topHit={topHit} />
 
-          <div className="px-4 py-5 lg:px-7">
-            {error ? (
-              <Alert className="mb-5 rounded-[8px] border-[#ff6f91]/35 bg-[#40131d]/80 text-[#ffdce5] shadow-none">
-                <AlertTriangle />
-                <AlertTitle>分析失败</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            ) : null}
+          <PipelineOrbit analysis={analysis} isAnalyzing={isAnalyzing} />
+        </section>
 
-            <MetricsStrip metrics={metrics} />
+        {error ? (
+          <Alert className="mt-4 rounded-[8px] border-[#ff6b6b]/35 bg-[#2a1014]/90 text-[#ffe1e5] shadow-none">
+            <AlertTriangle />
+            <AlertTitle>分析失败</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
 
-            <div className="mt-5">
-              {activeView === "upload" ? (
-                <UploadView
-                  analysis={analysis}
-                  analysisMode={analysisMode}
-                  deepseekPrecheck={deepseekPrecheck}
-                  file={file}
-                  fileRef={fileRef}
-                  inputLength={normalizedInputLength}
-                  isAnalyzing={isAnalyzing}
-                  sequenceRef={sequenceRef}
-                  sequenceText={sequenceText}
-                  topHit={topHit}
-                  onAnalyze={handleAnalyze}
-                  onAnalysisMode={setAnalysisMode}
-                  onDeepseekPrecheck={setDeepseekPrecheck}
-                  onFile={handleFile}
-                  onSample={() => {
-                    setFile(null);
-                    setSequenceText(sampleSequence);
-                    setError("");
-                  }}
-                  onSequenceText={handleSequenceText}
-                />
-              ) : null}
-              {activeView === "dashboard" ? (
-                <DashboardView analysis={analysis} dashboard={dashboard} onNavigate={navigate} onRefresh={refreshDashboard} />
-              ) : null}
-              {activeView === "progress" ? <ProgressView analysis={analysis} isAnalyzing={isAnalyzing} /> : null}
-              {activeView === "overview" ? <OverviewView analysis={analysis} onNavigate={navigate} /> : null}
-              {activeView === "charts" ? <ChartsView analysis={analysis} /> : null}
-              {activeView === "report" ? (
-                <ReportView
-                  analysis={analysis}
-                  chat={chat}
-                  isAsking={isAsking}
-                  question={question}
-                  onAsk={handleQuestion}
-                  onQuestion={setQuestion}
-                />
-              ) : null}
-            </div>
-
-            <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 py-5 text-xs text-[#77857f]">
-              <span>BioSeqMind-AI / geNomad / NCBI / DeepSeek</span>
-              <span>真实依赖不可用时返回错误，不生成演示结果</span>
-            </div>
-          </div>
-        </main>
-      </div>
+        {!atlasInHero ? (
+          <section className="atlas-section">
+            <AtlasNavigator active={atlasView} onActive={setAtlasView} />
+            <AtlasCanvas
+              active={atlasView}
+              analysis={analysis}
+              chat={chat}
+              dashboard={dashboard}
+              isAsking={isAsking}
+              question={question}
+              onAsk={handleQuestion}
+              onQuestion={setQuestion}
+              onRefreshDashboard={refreshDashboard}
+            />
+          </section>
+        ) : null}
+      </main>
     </div>
   );
 }
 
-function UploadView({
-  analysis,
+function LandingPortal({ onEnter }: { onEnter: () => void }) {
+  return (
+    <div className="landing-shell min-h-screen bg-[#050706] text-[#edf8f2]">
+      <CinematicBackdrop />
+      <header className="landing-nav">
+        <div className="brand-constellation">
+          <span className="brand-sigil">
+            <Dna />
+          </span>
+          <div>
+            <h1>BioSeqMind</h1>
+            <p>Helix Observatory</p>
+          </div>
+        </div>
+        <div className="landing-status">
+          <span>geNomad</span>
+          <span>NCBI</span>
+          <span>DeepSeek</span>
+        </div>
+      </header>
+
+      <main className="landing-stage">
+        <section className="landing-copy">
+          <p>AI BIOSEQUENCE INTELLIGENCE</p>
+          <h2>
+            <span>BioSeqMind</span>
+            <span>分子证据引擎</span>
+          </h2>
+          <span>将 FASTA、geNomad、NCBI BLAST 与 AI 报告压缩成一条可追溯的分子证据链。</span>
+          <button className="landing-enter" onClick={onEnter} type="button">
+            <Play />
+            进入分析舱
+          </button>
+        </section>
+
+        <section className="landing-organism" aria-label="BioSeqMind helix visual">
+          <BioCinemaCanvas active />
+        </section>
+
+        <aside className="landing-proof">
+          <div>
+            <small>01</small>
+            <strong>Molecular Intake</strong>
+            <span>序列清洗、长度、GC 含量与输入有效性</span>
+          </div>
+          <div>
+            <small>02</small>
+            <strong>Evidence Fusion</strong>
+            <span>geNomad、BLAST 与候选来源融合评分</span>
+          </div>
+          <div>
+            <small>03</small>
+            <strong>AI Report</strong>
+            <span>可下载 Markdown 报告与上下文追问</span>
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+function CinematicBackdrop() {
+  return (
+    <div className="cinema-backdrop" aria-hidden="true">
+      <div className="cinema-grid" />
+      <div className="cinema-noise" />
+    </div>
+  );
+}
+
+function TopConstellation({
   analysisMode,
+  isAnalyzing,
+  onAnalyze,
+  onMode,
+}: {
+  analysisMode: AnalysisMode;
+  isAnalyzing: boolean;
+  onAnalyze: () => void;
+  onMode: (mode: AnalysisMode) => void;
+}) {
+  return (
+    <header className="top-constellation">
+      <div className="brand-constellation">
+        <span className="brand-sigil">
+          <Dna />
+        </span>
+        <div>
+          <h1>BioSeqMind</h1>
+          <p>Helix Observatory</p>
+        </div>
+      </div>
+      <div className="mode-constellation" aria-label="analysis mode">
+        <button className={analysisMode === "fast_nn" ? "is-active" : ""} onClick={() => onMode("fast_nn")} type="button">
+          <Zap />
+          Fast
+        </button>
+        <button className={analysisMode === "end_to_end" ? "is-active" : ""} onClick={() => onMode("end_to_end")} type="button">
+          <Server />
+          Full
+        </button>
+      </div>
+      <Button className="cinema-launch" disabled={isAnalyzing} onClick={onAnalyze} type="button">
+        {isAnalyzing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Play data-icon="inline-start" />}
+        Run analysis
+      </Button>
+    </header>
+  );
+}
+
+function SequenceCapsule({
   deepseekPrecheck,
   file,
   fileRef,
-  inputLength,
   isAnalyzing,
   sequenceRef,
   sequenceText,
-  topHit,
-  onAnalyze,
-  onAnalysisMode,
+  signal,
   onDeepseekPrecheck,
   onFile,
   onSample,
   onSequenceText,
 }: {
-  analysis: AnalysisResult | null;
-  analysisMode: AnalysisMode;
   deepseekPrecheck: boolean;
   file: File | null;
   fileRef: RefObject<HTMLInputElement | null>;
-  inputLength: number;
   isAnalyzing: boolean;
   sequenceRef: RefObject<HTMLTextAreaElement | null>;
   sequenceText: string;
-  topHit: AnalysisResult["blast_hits"][number] | null;
-  onAnalyze: (event: FormEvent<HTMLFormElement>) => void;
-  onAnalysisMode: (mode: AnalysisMode) => void;
+  signal: SequenceSignal;
   onDeepseekPrecheck: (enabled: boolean) => void;
   onFile: (event: ChangeEvent<HTMLInputElement>) => void;
   onSample: () => void;
   onSequenceText: (value: string) => void;
 }) {
-  const inputState = inferInputState(sequenceText, file);
-
   return (
-    <form className="grid gap-5 2xl:grid-cols-[minmax(0,1.18fr)_minmax(360px,.82fr)]" onSubmit={onAnalyze}>
-      <Panel className="min-h-[650px]">
-        <PanelHeader
-          eyebrow="Sequence Input"
-          icon={Dna}
-          title="序列装载舱"
-          action={
-            <Button className="energy-button h-9 rounded-[8px] bg-[#68f0cf] text-[#07100d] hover:bg-[#8ff8dd]" disabled={isAnalyzing} type="submit">
-              {isAnalyzing ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Play data-icon="inline-start" />}
-              启动
-            </Button>
-          }
-        />
-
-        <div className="grid gap-4 lg:grid-cols-[1fr_220px]">
-          <div className="relative min-h-[460px] overflow-hidden rounded-[8px] border border-white/10 bg-[#050606]">
-            <div className="flex h-10 items-center justify-between border-b border-white/10 bg-white/[0.035] px-3">
-              <div className="flex items-center gap-2 text-xs text-[#94a39b]">
-                <span className="size-2 rounded-full bg-[#68f0cf]" />
-                <span>FASTA / DNA / RNA</span>
-              </div>
-              <span className="font-mono text-xs text-[#788982]">{inputLength.toLocaleString()} nt</span>
-            </div>
-            <Textarea
-              className="min-h-[420px] resize-none rounded-none border-0 bg-transparent px-4 py-4 font-mono text-[13px] leading-6 text-[#dcebe5] outline-none placeholder:text-[#52605b] focus-visible:ring-0"
-              ref={sequenceRef}
-              value={sequenceText}
-              onChange={(event) => onSequenceText(event.target.value)}
-              placeholder="粘贴 FASTA 或原始 DNA/RNA 序列"
-            />
-            <div className="pointer-events-none absolute inset-y-10 left-0 w-8 border-r border-white/[0.04] bg-[linear-gradient(180deg,rgba(104,240,207,.04),transparent)]" />
-            <div className="cinema-scanline" />
-          </div>
-
-          <div className="grid gap-3">
-            <Input ref={fileRef} accept=".fa,.fasta,.fna,.txt" className="hidden" onChange={onFile} type="file" />
-            <ControlButton icon={FileText} label="选择 FASTA" meta={file?.name ?? "本地文件"} onClick={() => fileRef.current?.click()} />
-            <ControlButton icon={Sparkles} label="载入样例" meta="快速校验界面" onClick={onSample} />
-            <div className="rounded-[8px] border border-white/10 bg-white/[0.035] p-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-white">DeepSeek 预检</div>
-                  <div className="mt-1 text-xs text-[#8fa099]">{deepseekPrecheck ? "开启" : "关闭"}</div>
-                </div>
-                <button
-                  aria-label="切换 DeepSeek 输入预检"
-                  className={`h-6 w-11 rounded-full p-1 transition ${deepseekPrecheck ? "bg-[#86b7ff]" : "bg-white/15"}`}
-                  onClick={() => onDeepseekPrecheck(!deepseekPrecheck)}
-                  type="button"
-                >
-                  <span className={`block size-4 rounded-full bg-[#050606] transition ${deepseekPrecheck ? "translate-x-5" : ""}`} />
-                </button>
-              </div>
-            </div>
-            <ModePicker analysisMode={analysisMode} onAnalysisMode={onAnalysisMode} />
-          </div>
+    <>
+      <div className="vessel-heading">
+        <span>
+          <TerminalSquare />
+        </span>
+        <div>
+          <p>Sequence Vessel</p>
+          <h2>输入序列</h2>
         </div>
-      </Panel>
-
-      <div className="grid gap-5">
-        <Panel>
-          <PanelHeader eyebrow="Quality Gate" icon={ShieldCheck} title="输入质控" />
-          <div className="rounded-[8px] border border-white/10 bg-[#060706] p-4">
-            <div className="flex items-end justify-between gap-4">
-              <div>
-                <div className="text-xs uppercase tracking-[0.22em] text-[#77857f]">Readiness</div>
-                <div className="mt-2 text-4xl font-semibold text-white">{inputLength ? "Ready" : "Idle"}</div>
-              </div>
-              <div className="text-right font-mono text-sm text-[#e7d8b1]">{inputLength.toLocaleString()} nt</div>
-            </div>
-            <div className="mt-5 space-y-3">
-              <ReadinessRow label="FASTA header" value={inputState.hasHeader ? "detected" : "not detected"} active={inputState.hasHeader} />
-              <ReadinessRow label="inferred type" value={inputState.kind} active={inputLength > 0 || Boolean(file)} />
-              <ReadinessRow label="input source" value={file ? "file" : "text"} active={Boolean(file) || sequenceText.length > 0} />
-            </div>
-          </div>
-          <div className="mt-4 h-[132px] overflow-hidden rounded-[8px] border border-white/10 bg-[#050606] p-4">
-            <SequenceSparkline text={sequenceText} />
-          </div>
-        </Panel>
-
-        <Panel>
-          <PanelHeader eyebrow="Evidence Preview" icon={Network} title="证据预览" />
-          <div className="space-y-3">
-            <EvidenceLine label="geNomad" value={analysis?.genomad.label ?? "等待分析"} score={analysis ? analysis.genomad.confidence * 100 : 0} />
-            <EvidenceLine label="BLAST Top Hit" value={topHit?.organism ?? "等待命中"} score={topHit?.identity ?? 0} />
-            <EvidenceLine label="Fusion" value={analysis?.fusion.candidate_source ?? "等待融合"} score={analysis?.fusion.confidence_score ?? 0} />
-          </div>
-        </Panel>
       </div>
-    </form>
+
+      <div className="sequence-slate">
+        <div className="slate-meta">
+          <span>{signal.hasHeader ? "FASTA header detected" : "Raw sequence"}</span>
+          <strong>{signal.length.toLocaleString()} nt</strong>
+        </div>
+        <Textarea
+          className="sequence-textarea"
+          placeholder="Paste FASTA / DNA / RNA sequence"
+          ref={sequenceRef}
+          value={sequenceText}
+          onChange={(event) => onSequenceText(event.target.value)}
+        />
+      </div>
+
+      <Input ref={fileRef} accept=".fa,.fasta,.fna,.txt" className="hidden" onChange={onFile} type="file" />
+      <div className="vessel-actions">
+        <button onClick={() => fileRef.current?.click()} type="button">
+          <Upload />
+          <span>
+            <strong>FASTA</strong>
+            <small>{file?.name ?? "Upload"}</small>
+          </span>
+        </button>
+        <button onClick={onSample} type="button">
+          <Sparkles />
+          <span>
+            <strong>Sample</strong>
+            <small>Load demo</small>
+          </span>
+        </button>
+      </div>
+
+      <div className="precheck-line">
+        <div>
+          <strong>DeepSeek precheck</strong>
+          <span>{deepseekPrecheck ? "Enabled" : "Disabled"}</span>
+        </div>
+        <button
+          aria-label="切换 DeepSeek 输入预检"
+          className={deepseekPrecheck ? "is-on" : ""}
+          onClick={() => onDeepseekPrecheck(!deepseekPrecheck)}
+          type="button"
+        >
+          <span />
+        </button>
+      </div>
+
+      <button className="vessel-run" disabled={isAnalyzing} type="submit">
+        {isAnalyzing ? <Loader2 className="animate-spin" /> : <Play />}
+        {isAnalyzing ? "Sequencing" : "Start analysis"}
+      </button>
+    </>
   );
 }
 
-function DashboardView({
+function HelixSpectacle({
   analysis,
-  dashboard,
-  onNavigate,
-  onRefresh,
+  composition,
+  isAnalyzing,
+  runState,
+  signal,
 }: {
   analysis: AnalysisResult | null;
-  dashboard: DashboardStats | null;
-  onNavigate: (view: ViewId) => void;
-  onRefresh: () => void;
+  composition: Record<"A" | "T" | "G" | "C" | "U" | "N", number>;
+  isAnalyzing: boolean;
+  runState: string;
+  signal: SequenceSignal;
 }) {
   return (
-    <section className="grid gap-5 2xl:grid-cols-[1.05fr_.95fr]">
-      <Panel>
-        <PanelHeader
-          eyebrow="Mission Control"
-          icon={Microscope}
-          title="运行看板"
-          action={
-            <Button className="h-9 rounded-[8px]" onClick={onRefresh} type="button" variant="outline">
-              <RotateCw data-icon="inline-start" />
-              刷新
-            </Button>
-          }
-        />
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {pipelineBlueprint.slice(1).map((item, index) => {
-            const Icon = item.icon;
-            const done = Boolean(analysis?.timeline.find((step) => step.key === item.key));
-            return (
-              <div key={item.key} className="rounded-[8px] border border-white/10 bg-white/[0.035] p-4">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs text-[#73827c]">0{index + 1}</span>
-                  <Icon className={done ? "text-[#68f0cf]" : "text-[#52605b]"} />
-                </div>
-                <div className="mt-5 text-sm font-medium text-white">{item.label}</div>
-              </div>
-            );
-          })}
-        </div>
-      </Panel>
-
-      <Panel>
-        <PanelHeader eyebrow="Recent Runs" icon={Clock3} title="最近任务" />
-        <div className="space-y-3">
-          {dashboard?.recent.length ? (
-            dashboard.recent.map((item) => (
-              <button
-                key={item.id}
-                className="group flex w-full items-center justify-between gap-3 rounded-[8px] border border-white/10 bg-white/[0.035] p-3 text-left transition hover:border-[#68f0cf]/35 hover:bg-[#68f0cf]/[0.06]"
-                onClick={() => onNavigate("overview")}
-                type="button"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-white">{item.sequence_name}</div>
-                  <div className="mt-1 truncate text-xs text-[#87968f]">{item.candidate_source}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="border-[#ffd166]/35 bg-[#ffd166]/10 text-[#ffe2a3]" variant="outline">
-                    {Math.round(item.confidence_score)}
-                  </Badge>
-                  <ChevronRight className="text-[#73827c] transition group-hover:text-[#68f0cf]" />
-                </div>
-              </button>
-            ))
-          ) : (
-            <EmptyState icon={Search} text="暂无历史任务" />
-          )}
-        </div>
-      </Panel>
+    <section className="helix-spectacle">
+      <BioCinemaCanvas active={isAnalyzing} />
+      <div className="spectacle-copy">
+        <p>AI Sequence Intelligence</p>
+        <h2>{runState}</h2>
+        <span>{analysis?.fusion.candidate_source ?? "输入序列后，Helix Core 会把质控、识别、BLAST 和 AI 解释汇聚成一条证据流。"}</span>
+      </div>
+      <div className="spectacle-readouts">
+        <MicroReadout label="Length" value={`${analysis?.sequence.length ?? signal.length} nt`} />
+        <MicroReadout label="GC" value={`${analysis?.sequence.gc_content ?? signal.gc}%`} />
+        <MicroReadout label="Type" value={analysis?.sequence.sequence_type ?? signal.kind} />
+        <MicroReadout label="Risk" value={analysis?.fusion.risk_level ?? "Pending"} />
+      </div>
+      <CompositionWave composition={composition} />
     </section>
   );
 }
 
-function ProgressView({ analysis, isAnalyzing }: { analysis: AnalysisResult | null; isAnalyzing: boolean }) {
-  const stepMap = new Map((analysis?.timeline ?? []).map((step) => [step.key, step]));
+function BioCinemaCanvas({ active }: { active?: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const host = canvas?.parentElement;
+    if (!canvas || !host) return;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x03060b, 0.022);
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+    camera.position.set(0, 0.08, 11);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+    renderer.setClearColor(0x000000, 0);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+
+    const group = new THREE.Group();
+    scene.add(group);
+
+    const createNoiseTexture = () => {
+      const textureCanvas = document.createElement("canvas");
+      textureCanvas.width = 96;
+      textureCanvas.height = 96;
+      const context = textureCanvas.getContext("2d");
+      if (context) {
+        const image = context.createImageData(textureCanvas.width, textureCanvas.height);
+        for (let index = 0; index < image.data.length; index += 4) {
+          const value = 106 + Math.random() * 92;
+          image.data[index] = value;
+          image.data[index + 1] = value;
+          image.data[index + 2] = value;
+          image.data[index + 3] = 255;
+        }
+        context.putImageData(image, 0, 0);
+      }
+      const texture = new THREE.CanvasTexture(textureCanvas);
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(2.6, 2.6);
+      return texture;
+    };
+
+    const createGlowTexture = () => {
+      const textureCanvas = document.createElement("canvas");
+      textureCanvas.width = 256;
+      textureCanvas.height = 256;
+      const context = textureCanvas.getContext("2d");
+      if (context) {
+        const glow = context.createRadialGradient(128, 128, 0, 128, 128, 128);
+        glow.addColorStop(0, "rgba(88, 194, 255, 0.52)");
+        glow.addColorStop(0.38, "rgba(42, 126, 210, 0.22)");
+        glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+        context.fillStyle = glow;
+        context.fillRect(0, 0, 256, 256);
+      }
+      return new THREE.CanvasTexture(textureCanvas);
+    };
+
+    const beadBumpMap = createNoiseTexture();
+    const glowTexture = createGlowTexture();
+    const microscopeGlow = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        blending: THREE.AdditiveBlending,
+        color: 0x78d7ff,
+        depthWrite: false,
+        map: glowTexture,
+        opacity: 0.45,
+        transparent: true,
+      }),
+    );
+    microscopeGlow.position.set(0, -0.1, -2.6);
+    microscopeGlow.scale.set(5.7, 7.5, 1);
+    scene.add(microscopeGlow);
+
+    const backboneMaterialA = new THREE.MeshPhysicalMaterial({
+      bumpMap: beadBumpMap,
+      bumpScale: 0.014,
+      clearcoat: 0.72,
+      clearcoatRoughness: 0.3,
+      color: 0x74dff2,
+      emissive: 0x093345,
+      emissiveIntensity: 0.42,
+      metalness: 0.04,
+      roughness: 0.43,
+    });
+    const backboneMaterialB = new THREE.MeshPhysicalMaterial({
+      bumpMap: beadBumpMap,
+      bumpScale: 0.012,
+      clearcoat: 0.7,
+      clearcoatRoughness: 0.32,
+      color: 0xc1799f,
+      emissive: 0x311120,
+      emissiveIntensity: 0.34,
+      metalness: 0.04,
+      roughness: 0.46,
+    });
+    const ghostBackboneMaterial = new THREE.MeshBasicMaterial({
+      blending: THREE.AdditiveBlending,
+      color: 0x7fe7ff,
+      depthWrite: false,
+      opacity: 0.08,
+      transparent: true,
+    });
+    const rungMaterial = new THREE.MeshStandardMaterial({
+      color: 0xdaecf8,
+      emissive: 0x07131b,
+      metalness: 0.12,
+      opacity: 0.62,
+      roughness: 0.3,
+      transparent: true,
+    });
+    const hydrogenMaterial = new THREE.MeshBasicMaterial({
+      blending: THREE.AdditiveBlending,
+      color: 0xe8f3ff,
+      depthWrite: false,
+      opacity: 0.36,
+      transparent: true,
+    });
+    const phosphateMaterial = new THREE.MeshStandardMaterial({
+      color: 0xeaf6ff,
+      emissive: 0x102032,
+      metalness: 0.18,
+      roughness: 0.28,
+    });
+    const sugarMaterial = new THREE.MeshStandardMaterial({
+      color: 0xa9c2d9,
+      emissive: 0x0a1521,
+      metalness: 0.12,
+      roughness: 0.32,
+    });
+    const baseMaterials = [
+      new THREE.MeshStandardMaterial({ color: 0x58d5ee, emissive: 0x073749, emissiveIntensity: 0.35, metalness: 0.05, roughness: 0.34 }),
+      new THREE.MeshStandardMaterial({ color: 0xffb64b, emissive: 0x4b2307, emissiveIntensity: 0.38, metalness: 0.08, roughness: 0.3 }),
+      new THREE.MeshStandardMaterial({ color: 0xb083ff, emissive: 0x20103f, emissiveIntensity: 0.34, metalness: 0.05, roughness: 0.34 }),
+      new THREE.MeshStandardMaterial({ color: 0xf07aa9, emissive: 0x3d1026, emissiveIntensity: 0.32, metalness: 0.06, roughness: 0.35 }),
+    ];
+    const baseBridgeMaterials = [
+      new THREE.MeshPhysicalMaterial({ color: 0x57dfff, emissive: 0x083345, emissiveIntensity: 0.42, metalness: 0.1, roughness: 0.2, clearcoat: 0.78, clearcoatRoughness: 0.18 }),
+      new THREE.MeshPhysicalMaterial({ color: 0xffb347, emissive: 0x4f2307, emissiveIntensity: 0.45, metalness: 0.1, roughness: 0.22, clearcoat: 0.74, clearcoatRoughness: 0.2 }),
+      new THREE.MeshPhysicalMaterial({ color: 0xb48cff, emissive: 0x211048, emissiveIntensity: 0.4, metalness: 0.08, roughness: 0.22, clearcoat: 0.72, clearcoatRoughness: 0.2 }),
+      new THREE.MeshPhysicalMaterial({ color: 0xf075a4, emissive: 0x3a1024, emissiveIntensity: 0.34, metalness: 0.08, roughness: 0.24, clearcoat: 0.7, clearcoatRoughness: 0.22 }),
+    ];
+
+    const makeStrand = (phase: number) => {
+      const points: THREE.Vector3[] = [];
+      for (let index = 0; index < 360; index++) {
+        const t = index / 359;
+        const angle = t * Math.PI * 6.65 + phase;
+        const radius = 0.9 + Math.cos(t * Math.PI * 3.2) * 0.028;
+        const axisX = Math.sin((t - 0.08) * Math.PI * 1.55) * 0.16;
+        const axisZ = Math.cos(t * Math.PI * 1.2) * 0.08;
+        points.push(new THREE.Vector3(axisX + Math.cos(angle) * radius, (t - 0.5) * 7.45, axisZ + Math.sin(angle) * radius * 0.66));
+      }
+      return points;
+    };
+
+    const strandA = makeStrand(0);
+    const strandB = makeStrand(Math.PI);
+    const curveA = new THREE.CatmullRomCurve3(strandA);
+    const curveB = new THREE.CatmullRomCurve3(strandB);
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(curveA, 360, 0.018, 18, false), rungMaterial));
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(curveB, 360, 0.018, 18, false), rungMaterial));
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(curveA, 360, 0.072, 18, false), ghostBackboneMaterial));
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(curveB, 360, 0.058, 18, false), ghostBackboneMaterial));
+
+    const beadGeometry = new THREE.SphereGeometry(0.096, 32, 24);
+    const rearBeadGeometry = new THREE.SphereGeometry(0.081, 28, 22);
+    const atomGeometry = new THREE.SphereGeometry(0.034, 18, 16);
+    const baseRingGeometry = new THREE.TorusGeometry(0.054, 0.006, 6, 8);
+    const smallRingGeometry = new THREE.TorusGeometry(0.038, 0.005, 5, 7);
+    const phosphateGeometry = new THREE.IcosahedronGeometry(0.037, 1);
+    const sugarGeometry = new THREE.TorusGeometry(0.058, 0.006, 6, 20);
+    const cylinderBetween = (
+      start: THREE.Vector3,
+      end: THREE.Vector3,
+      radius: number,
+      material: THREE.Material,
+      segments = 14,
+    ) => {
+      const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+      const direction = new THREE.Vector3().subVectors(end, start);
+      const length = direction.length();
+      const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, segments), material);
+      cylinder.position.copy(midpoint);
+      cylinder.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+      group.add(cylinder);
+      return cylinder;
+    };
+    const pointBetween = (start: THREE.Vector3, end: THREE.Vector3, amount: number) => start.clone().lerp(end, amount);
+    const addBaseRing = (position: THREE.Vector3, direction: THREE.Vector3, material: THREE.Material, purine: boolean, spin: number) => {
+      const ring = new THREE.Mesh(purine ? baseRingGeometry : smallRingGeometry, material);
+      ring.position.copy(position);
+      ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
+      ring.rotateZ(spin);
+      group.add(ring);
+    };
+
+    for (let index = 2; index < strandA.length; index += 7) {
+      const beadA = new THREE.Mesh(beadGeometry, backboneMaterialA);
+      beadA.position.copy(strandA[index]);
+      const beadB = new THREE.Mesh(rearBeadGeometry, backboneMaterialB);
+      beadB.position.copy(strandB[index]);
+      group.add(beadA, beadB);
+    }
+
+    for (let index = 18; index < strandA.length - 18; index += 10) {
+      const a = strandA[index];
+      const b = strandB[index];
+      const pairDirection = new THREE.Vector3().subVectors(b, a).normalize();
+      const baseIndex = Math.floor(index / 10);
+      const baseMaterialA = baseMaterials[baseIndex % baseMaterials.length];
+      const baseMaterialB = baseMaterials[(baseIndex + 1) % baseMaterials.length];
+      const bridgeMaterial = baseBridgeMaterials[baseIndex % baseBridgeMaterials.length];
+      cylinderBetween(pointBetween(a, b, 0.12), pointBetween(a, b, 0.88), 0.018, bridgeMaterial, 18);
+      cylinderBetween(pointBetween(a, b, 0.14), pointBetween(a, b, 0.86), 0.006, hydrogenMaterial, 10);
+      cylinderBetween(a, pointBetween(a, b, 0.1), 0.012, rungMaterial, 12);
+      cylinderBetween(b, pointBetween(a, b, 0.9), 0.012, rungMaterial, 12);
+      if (baseIndex % 2 === 0) {
+        addBaseRing(pointBetween(a, b, 0.28), pairDirection, baseMaterialA, true, index * 0.03);
+        addBaseRing(pointBetween(a, b, 0.72), pairDirection, baseMaterialB, false, index * -0.04);
+      }
+      [0.1, 0.22, 0.39, 0.61, 0.78, 0.9].forEach((amount, atomIndex) => {
+        const atom = new THREE.Mesh(atomGeometry, atomIndex < 3 ? baseMaterialA : baseMaterialB);
+        atom.position.copy(pointBetween(a, b, amount));
+        group.add(atom);
+      });
+    }
+
+    for (let index = 0; index < strandA.length; index += 12) {
+      const phosphateA = new THREE.Mesh(phosphateGeometry, phosphateMaterial);
+      phosphateA.position.copy(strandA[index]);
+      const phosphateB = new THREE.Mesh(phosphateGeometry, phosphateMaterial);
+      phosphateB.position.copy(strandB[index]);
+      const sugarA = new THREE.Mesh(sugarGeometry, sugarMaterial);
+      sugarA.position.copy(strandA[Math.min(index + 4, strandA.length - 1)]);
+      sugarA.rotation.set(index * 0.07, index * 0.11, Math.PI / 2);
+      const sugarB = new THREE.Mesh(sugarGeometry, sugarMaterial);
+      sugarB.position.copy(strandB[Math.min(index + 4, strandB.length - 1)]);
+      sugarB.rotation.set(index * 0.07, index * 0.11 + Math.PI, Math.PI / 2);
+      group.add(phosphateA, phosphateB, sugarA, sugarB);
+    }
+
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      blending: THREE.AdditiveBlending,
+      color: 0xb7d7ff,
+      depthWrite: false,
+      opacity: 0.025,
+      transparent: true,
+    });
+    const rings = [
+      new THREE.Mesh(new THREE.TorusGeometry(2.15, 0.004, 8, 160), ringMaterial),
+      new THREE.Mesh(new THREE.TorusGeometry(2.7, 0.004, 8, 160), ringMaterial),
+      new THREE.Mesh(new THREE.TorusGeometry(2.45, 0.004, 8, 160), ringMaterial),
+    ];
+    rings[0].rotation.x = Math.PI / 2.35;
+    rings[1].rotation.x = Math.PI / 2.8;
+    rings[1].rotation.y = Math.PI / 5;
+    rings[2].rotation.x = Math.PI / 2;
+    rings[2].rotation.z = Math.PI / 7;
+    rings.forEach((ring) => group.add(ring));
+
+    const particleGeometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(220 * 3);
+    for (let index = 0; index < 220; index++) {
+      const radius = 2.4 + ((index * 37) % 110) / 40;
+      const theta = index * 1.618;
+      const phi = Math.acos(2 * ((index % 97) / 97) - 1);
+      positions[index * 3] = Math.sin(phi) * Math.cos(theta) * radius;
+      positions[index * 3 + 1] = Math.sin(phi) * Math.sin(theta) * radius * 0.72;
+      positions[index * 3 + 2] = Math.cos(phi) * radius;
+    }
+    particleGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const particles = new THREE.Points(
+      particleGeometry,
+      new THREE.PointsMaterial({
+        blending: THREE.AdditiveBlending,
+        color: 0xcfe3ff,
+        depthWrite: false,
+        opacity: 0.16,
+        size: 0.012,
+        transparent: true,
+      }),
+    );
+    group.add(particles);
+
+    group.rotation.x = -0.08;
+    group.rotation.y = -0.24;
+    group.rotation.z = -0.16;
+    group.scale.setScalar(0.88);
+
+    const keyLight = new THREE.PointLight(0xf6fbff, 15, 13);
+    keyLight.position.set(3.2, 4.8, 5.2);
+    scene.add(keyLight);
+    const fillLight = new THREE.PointLight(0x4fd9ff, 5.4, 12);
+    fillLight.position.set(-4.2, -2.4, 3.8);
+    scene.add(fillLight);
+    const rimLight = new THREE.PointLight(0xffbad1, 3.5, 10);
+    rimLight.position.set(-2.8, 3.2, -3.4);
+    scene.add(rimLight);
+    const amberLight = new THREE.PointLight(0xffb347, 2.2, 8);
+    amberLight.position.set(1.8, -1.6, 3.6);
+    scene.add(amberLight);
+    scene.add(new THREE.AmbientLight(0xa9c4ec, 0.7));
+
+    const pointer = { x: 0, y: 0 };
+    const target = { x: 0, y: 0 };
+    const lens = { x: 0.58, y: 0.48 };
+    const lensTarget = { x: 0.58, y: 0.48 };
+    let pointerInside = false;
+    let nextWanderAt = 4200 + Math.random() * 1800;
+    let wanderEase = 0.028;
+    let nextWaveAt = 1800 + Math.random() * 2200;
+    let waveUntil = 0;
+    const setLensPosition = () => {
+      host.style.setProperty("--lens-x", `${(lens.x * 100).toFixed(2)}%`);
+      host.style.setProperty("--lens-y", `${(lens.y * 100).toFixed(2)}%`);
+    };
+    const resize = () => {
+      const rect = host.getBoundingClientRect();
+      renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
+      camera.aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
+      camera.updateProjectionMatrix();
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      const rect = host.getBoundingClientRect();
+      const normalizedX = (event.clientX - rect.left) / Math.max(1, rect.width);
+      const normalizedY = (event.clientY - rect.top) / Math.max(1, rect.height);
+      pointerInside = true;
+      pointer.x = (normalizedX - 0.5) * 2;
+      pointer.y = (normalizedY - 0.5) * 2;
+      lensTarget.x = Math.min(0.84, Math.max(0.16, normalizedX));
+      lensTarget.y = Math.min(0.84, Math.max(0.16, normalizedY));
+    };
+    const onPointerEnter = () => {
+      pointerInside = true;
+    };
+    const onPointerLeave = () => {
+      pointerInside = false;
+      pointer.x = 0;
+      pointer.y = 0;
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    host.addEventListener("pointerenter", onPointerEnter);
+    host.addEventListener("pointermove", onPointerMove);
+    host.addEventListener("pointerleave", onPointerLeave);
+    resize();
+    setLensPosition();
+
+    let frame = 0;
+    let animationId = 0;
+    const animate = () => {
+      const now = performance.now();
+      frame += 0.01;
+      if (!pointerInside && now > nextWanderAt) {
+        lensTarget.x = 0.48 + Math.random() * 0.2;
+        lensTarget.y = 0.34 + Math.random() * 0.34;
+        wanderEase = Math.random() > 0.54 ? 0.018 + Math.random() * 0.02 : 0.08 + Math.random() * 0.08;
+        nextWanderAt = now + 420 + Math.random() * 2600;
+      }
+      if (now > nextWaveAt) {
+        waveUntil = now + 420 + Math.random() * 520;
+        nextWaveAt = now + 4200 + Math.random() * 6200;
+      }
+      host.classList.toggle("is-wavering", now < waveUntil);
+      const lensEase = pointerInside ? 0.2 : wanderEase;
+      lens.x += (lensTarget.x - lens.x) * lensEase;
+      lens.y += (lensTarget.y - lens.y) * lensEase;
+      setLensPosition();
+      target.x += (pointer.x - target.x) * 0.055;
+      target.y += (pointer.y - target.y) * 0.055;
+      group.rotation.y += active ? 0.0028 : 0.0014;
+      group.rotation.x += (-0.08 - target.y * 0.24 - group.rotation.x) * 0.035;
+      group.rotation.z += (-0.16 + target.x * 0.2 - group.rotation.z) * 0.035;
+      camera.position.x += (target.x * 0.28 - camera.position.x) * 0.03;
+      camera.position.y += (0.12 - target.y * 0.18 - camera.position.y) * 0.03;
+      camera.lookAt(0, 0, 0);
+      rings[0].rotation.z += 0.0025;
+      rings[1].rotation.z -= 0.0018;
+      particles.rotation.y -= 0.0015;
+      particles.rotation.x = Math.sin(frame) * 0.04;
+      renderer.render(scene, camera);
+      animationId = window.requestAnimationFrame(animate);
+    };
+    animate();
+
+    return () => {
+      window.cancelAnimationFrame(animationId);
+      host.classList.remove("is-wavering");
+      host.removeEventListener("pointerenter", onPointerEnter);
+      host.removeEventListener("pointermove", onPointerMove);
+      host.removeEventListener("pointerleave", onPointerLeave);
+      observer.disconnect();
+      scene.traverse((object) => {
+        if ("geometry" in object && object.geometry instanceof THREE.BufferGeometry) {
+          object.geometry.dispose();
+        }
+        if ("material" in object) {
+          const material = object.material as THREE.Material | THREE.Material[];
+          if (Array.isArray(material)) {
+            material.forEach((item) => item.dispose());
+          } else {
+            material.dispose();
+          }
+        }
+      });
+      beadBumpMap.dispose();
+      glowTexture.dispose();
+      renderer.dispose();
+    };
+  }, [active]);
 
   return (
-    <Panel>
-      <PanelHeader eyebrow="Execution Graph" icon={Workflow} title="任务链路" />
-      <div className="grid gap-3 lg:grid-cols-7">
-        {pipelineBlueprint.map((item, index) => {
-          const step = stepMap.get(item.key);
-          return (
-            <PipelineNode
-              key={item.key}
-              active={isAnalyzing && !analysis && index <= 2}
-              index={index}
-              item={item}
-              step={step}
-            />
-          );
-        })}
-      </div>
-      <div className="mt-5 overflow-hidden rounded-[8px] border border-white/10">
-        <Table>
-          <TableHeader>
-            <TableRow className="border-white/10 hover:bg-transparent">
-              <TableHead>阶段</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>耗时</TableHead>
-              <TableHead>细节</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(analysis?.timeline.length ? analysis.timeline : []).map((step) => (
-              <TableRow key={`${step.key}-${step.elapsed_ms}`} className="border-white/10">
-                <TableCell className="font-medium text-white">{step.label}</TableCell>
-                <TableCell>
-                  <Badge className="border-[#68f0cf]/35 bg-[#68f0cf]/10 text-[#dffff4]" variant="outline">
-                    {step.status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="font-mono text-[#ffd166]">{step.elapsed_ms} ms</TableCell>
-                <TableCell className="text-[#9eb0a8]">{step.detail}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-        {!analysis ? <div className="p-6"><EmptyState icon={Workflow} text="等待一次完整分析" /></div> : null}
-      </div>
-    </Panel>
+    <div className="bio-observation-field">
+      <canvas className="bio-cinema-canvas" ref={canvasRef} />
+      <span className="microscope-lens" />
+      <span className="microscope-wave" />
+    </div>
   );
 }
 
-function OverviewView({ analysis, onNavigate }: { analysis: AnalysisResult | null; onNavigate: (view: ViewId) => void }) {
-  if (!analysis) return <EmptyState icon={Gauge} text="还没有分析结果" />;
-  const topHit = analysis.blast_hits[0];
-
+function EvidenceLens({
+  analysis,
+  dashboard,
+  signal,
+  topHit,
+}: {
+  analysis: AnalysisResult | null;
+  dashboard: DashboardStats | null;
+  signal: SequenceSignal;
+  topHit: AnalysisResult["blast_hits"][number] | null;
+}) {
   return (
-    <section className="grid gap-5 2xl:grid-cols-[.92fr_1.08fr]">
-      <Panel>
-        <PanelHeader
-          eyebrow="Result Synopsis"
-          icon={Gauge}
-          title="证据总览"
-          action={<RiskBadge risk={analysis.fusion.risk_level} />}
-        />
-        <div className="grid grid-cols-2 gap-3">
-          <DataTile label="序列类型" value={analysis.sequence.sequence_type} accent="blue" />
-          <DataTile label="序列长度" value={`${analysis.sequence.length.toLocaleString()} nt`} accent="green" />
-          <DataTile label="GC 含量" value={`${analysis.sequence.gc_content}%`} accent="amber" />
-          <DataTile label="可信度" value={`${analysis.fusion.confidence_score}/100`} accent="rose" />
-        </div>
-        <div className="mt-4 rounded-[8px] border border-white/10 bg-[#050606] p-4">
-          <div className="text-xs uppercase tracking-[0.2em] text-[#77857f]">Candidate Source</div>
-          <div className="mt-2 text-xl font-semibold text-white">{analysis.fusion.candidate_source}</div>
-          <div className="mt-3 space-y-2 text-sm leading-6 text-[#9eb0a8]">
-            {analysis.fusion.reasoning.map((item, index) => (
-              <p key={index}>{item}</p>
-            ))}
-          </div>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button className="energy-button rounded-[8px] bg-[#68f0cf] text-[#07100d] hover:bg-[#8ff8dd]" onClick={() => onNavigate("charts")}>
-            <BarChart3 data-icon="inline-start" />
-            图谱分析
-          </Button>
-          <Button className="rounded-[8px]" onClick={() => onNavigate("report")} variant="outline">
-            <Bot data-icon="inline-start" />
-            AI 报告
-          </Button>
-        </div>
-      </Panel>
+    <aside className="evidence-lens">
+      <div className="lens-title">
+        <span>Evidence Lens</span>
+        <Gauge />
+      </div>
+      <LensMetric label="Total runs" value={dashboard?.total_analyses ?? 0} suffix="runs" />
+      <LensMetric label="Average confidence" value={Math.round(dashboard?.average_confidence ?? analysis?.fusion.confidence_score ?? 0)} suffix="%" />
+      <LensMetric label="Input length" value={analysis?.sequence.length ?? signal.length} suffix="nt" />
+      <EvidenceMeter label="geNomad" score={analysis ? analysis.genomad.confidence * 100 : 0} value={analysis?.genomad.label ?? "Waiting"} />
+      <EvidenceMeter label="BLAST" score={topHit?.identity ?? 0} value={topHit?.organism ?? "Waiting"} />
+      <EvidenceMeter label="Fusion" score={analysis?.fusion.confidence_score ?? 0} value={analysis?.fusion.candidate_source ?? "Waiting"} />
+    </aside>
+  );
+}
 
-      <Panel>
-        <PanelHeader eyebrow="NCBI Evidence" icon={Database} title="BLAST 命中表" />
-        <div className="mb-4 rounded-[8px] border border-white/10 bg-white/[0.035] p-4">
-          <div className="text-sm text-[#9eb0a8]">Top Hit</div>
-          <div className="mt-1 truncate text-lg font-semibold text-white">
-            {topHit ? `${topHit.accession} / ${topHit.organism}` : "暂无命中"}
+function PipelineOrbit({ analysis, isAnalyzing }: { analysis: AnalysisResult | null; isAnalyzing: boolean }) {
+  const stepMap = new Map((analysis?.timeline ?? []).map((step) => [step.key, step]));
+  return (
+    <nav className="pipeline-orbit" aria-label="analysis pipeline">
+      {pipelineBlueprint.map((item, index) => {
+        const step = stepMap.get(item.key);
+        const status = step?.status ?? (isAnalyzing && index < 4 ? "running" : "pending");
+        const Icon = item.icon;
+        return (
+          <div key={item.key} className={`orbit-step orbit-${status}`}>
+            <span>{item.tag}</span>
+            <Icon />
+            <strong>{item.label}</strong>
+            <small>{step?.detail ?? (status === "running" ? "Live" : "Ready")}</small>
           </div>
-          {topHit ? <div className="mt-2 text-sm text-[#77857f]">identity {topHit.identity}% / coverage {topHit.coverage}%</div> : null}
+        );
+      })}
+    </nav>
+  );
+}
+
+function HeroAtlas({
+  active,
+  analysis,
+  chat,
+  dashboard,
+  isAsking,
+  question,
+  onActive,
+  onAsk,
+  onQuestion,
+  onRefreshDashboard,
+}: {
+  active: AtlasView;
+  analysis: AnalysisResult | null;
+  chat: Array<{ role: "user" | "assistant"; content: string; meta?: string }>;
+  dashboard: DashboardStats | null;
+  isAsking: boolean;
+  question: string;
+  onActive: (view: AtlasView) => void;
+  onAsk: () => void;
+  onQuestion: (value: string) => void;
+  onRefreshDashboard: () => void;
+}) {
+  return (
+    <section className="hero-atlas">
+      <AtlasNavigator active={active} onActive={onActive} />
+      <AtlasCanvas
+        active={active}
+        analysis={analysis}
+        chat={chat}
+        dashboard={dashboard}
+        isAsking={isAsking}
+        question={question}
+        onAsk={onAsk}
+        onQuestion={onQuestion}
+        onRefreshDashboard={onRefreshDashboard}
+      />
+    </section>
+  );
+}
+
+function AtlasNavigator({ active, onActive }: { active: AtlasView; onActive: (view: AtlasView) => void }) {
+  return (
+    <div className="atlas-navigator">
+      <div>
+        <p>Analysis Atlas</p>
+        <h2>证据、图谱、报告和运行记录</h2>
+      </div>
+      <div className="atlas-tabs">
+        {atlasViews.map((view) => {
+          const Icon = view.icon;
+          return (
+            <button key={view.id} className={active === view.id ? "is-active" : ""} onClick={() => onActive(view.id)} type="button">
+              <Icon />
+              {view.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AtlasCanvas({
+  active,
+  analysis,
+  chat,
+  dashboard,
+  isAsking,
+  question,
+  onAsk,
+  onQuestion,
+  onRefreshDashboard,
+}: {
+  active: AtlasView;
+  analysis: AnalysisResult | null;
+  chat: Array<{ role: "user" | "assistant"; content: string; meta?: string }>;
+  dashboard: DashboardStats | null;
+  isAsking: boolean;
+  question: string;
+  onAsk: () => void;
+  onQuestion: (value: string) => void;
+  onRefreshDashboard: () => void;
+}) {
+  return (
+    <div className="atlas-canvas">
+      {active === "evidence" ? <EvidenceAtlas analysis={analysis} /> : null}
+      {active === "charts" ? <ChartsAtlas analysis={analysis} /> : null}
+      {active === "report" ? (
+        <ReportAtlas
+          analysis={analysis}
+          chat={chat}
+          isAsking={isAsking}
+          question={question}
+          onAsk={onAsk}
+          onQuestion={onQuestion}
+        />
+      ) : null}
+      {active === "ops" ? <OpsAtlas dashboard={dashboard} onRefreshDashboard={onRefreshDashboard} /> : null}
+    </div>
+  );
+}
+
+function EvidenceAtlas({ analysis }: { analysis: AnalysisResult | null }) {
+  if (!analysis) return <EmptyState icon={Network} title="证据链等待分析" text="启动一次真实分析后，这里会展示 geNomad、BLAST、融合评分和推理依据。" />;
+  const topHit = analysis.blast_hits[0];
+  return (
+    <div className="atlas-grid">
+      <section className="atlas-panel">
+        <PanelHeading icon={Network} eyebrow="Fusion" title={analysis.fusion.candidate_source} />
+        <p className="panel-copy">可信度 {analysis.fusion.confidence_score}/100，需要验证：{analysis.fusion.requires_validation ? "是" : "否"}</p>
+        <div className="reason-list">
+          {analysis.fusion.reasoning.map((item, index) => (
+            <div key={index}>
+              <Check />
+              <span>{item}</span>
+            </div>
+          ))}
         </div>
-        <div className="overflow-hidden rounded-[8px] border border-white/10">
+      </section>
+      <section className="atlas-panel">
+        <PanelHeading icon={Database} eyebrow="NCBI" title="BLAST 命中表" />
+        <div className="mt-4 overflow-hidden rounded-[8px] border border-white/10">
           <Table>
             <TableHeader>
               <TableRow className="border-white/10 hover:bg-transparent">
@@ -693,7 +1123,7 @@ function OverviewView({ analysis, onNavigate }: { analysis: AnalysisResult | nul
               {analysis.blast_hits.map((hit) => (
                 <TableRow key={`${hit.rank}-${hit.accession}`} className="border-white/10">
                   <TableCell>{hit.rank}</TableCell>
-                  <TableCell className="font-mono text-[#68f0cf]">{hit.accession}</TableCell>
+                  <TableCell className="font-mono text-[#b7d7ff]">{hit.accession}</TableCell>
                   <TableCell className="max-w-[320px] truncate">{hit.organism}</TableCell>
                   <TableCell>{hit.identity}%</TableCell>
                   <TableCell>{formatEvalue(hit.evalue)}</TableCell>
@@ -701,33 +1131,33 @@ function OverviewView({ analysis, onNavigate }: { analysis: AnalysisResult | nul
               ))}
             </TableBody>
           </Table>
-          {!analysis.blast_hits.length ? <div className="p-6"><EmptyState icon={Database} text="NCBI 未返回命中" /></div> : null}
         </div>
-      </Panel>
-    </section>
+        {topHit ? <p className="panel-copy">Top hit: {topHit.accession} / {topHit.organism}</p> : null}
+      </section>
+    </div>
   );
 }
 
-function ChartsView({ analysis }: { analysis: AnalysisResult | null }) {
+function ChartsAtlas({ analysis }: { analysis: AnalysisResult | null }) {
   return (
-    <section className="grid gap-5 xl:grid-cols-3">
-      <Panel>
-        <PanelHeader eyebrow="Base Composition" icon={Dna} title="碱基组成" />
+    <div className="chart-atlas">
+      <section className="atlas-panel">
+        <PanelHeading icon={Dna} eyebrow="Composition" title="碱基组成" />
         <BaseCompositionChart analysis={analysis} />
-      </Panel>
-      <Panel>
-        <PanelHeader eyebrow="BLAST Ranking" icon={Database} title="命中排名" />
+      </section>
+      <section className="atlas-panel">
+        <PanelHeading icon={Database} eyebrow="Ranking" title="BLAST 排名" />
         <BlastRankingChart analysis={analysis} />
-      </Panel>
-      <Panel>
-        <PanelHeader eyebrow="Confidence" icon={Gauge} title="融合可信度" />
+      </section>
+      <section className="atlas-panel">
+        <PanelHeading icon={Gauge} eyebrow="Confidence" title="融合可信度" />
         <ConfidenceGauge analysis={analysis} />
-      </Panel>
-    </section>
+      </section>
+    </div>
   );
 }
 
-function ReportView({
+function ReportAtlas({
   analysis,
   chat,
   isAsking,
@@ -742,572 +1172,415 @@ function ReportView({
   onAsk: () => void;
   onQuestion: (value: string) => void;
 }) {
-  if (!analysis) return <EmptyState icon={Bot} text="还没有 AI 报告" />;
-
+  if (!analysis) return <EmptyState icon={Bot} title="AI 报告等待生成" text="完成分析后会出现结构化报告、下载入口和证据追问。" />;
   return (
-    <section className="grid gap-5 2xl:grid-cols-[1.08fr_.92fr]">
-      <Panel>
-        <PanelHeader
-          eyebrow={`${analysis.report.source} / ${analysis.report.model}`}
-          icon={FileText}
-          title="AI 报告"
-          action={
-            <a
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] border border-white/10 bg-white/[0.04] px-3 text-sm font-medium text-[#e8f6f1] transition hover:bg-white/[0.08]"
-              href={reportDownloadUrl(analysis.id)}
-            >
-              <Download data-icon="inline-start" />
-              Markdown
-            </a>
-          }
-        />
-        <MarkdownPreview markdown={analysis.report.markdown} />
-      </Panel>
-
-      <Panel>
-        <PanelHeader eyebrow="Context Chat" icon={MessageSquare} title="证据追问" />
-        <div className="flex h-[650px] flex-col gap-3">
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-[8px] border border-white/10 bg-[#050606] p-3">
-            <div className="flex flex-col gap-3">
-              {chat.map((item, index) => (
-                <ChatBubble key={`${item.role}-${index}`} item={item} />
-              ))}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Input
-              className="h-10 rounded-[8px] border-white/10 bg-white/[0.04]"
-              value={question}
-              onChange={(event) => onQuestion(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") onAsk();
-              }}
-              placeholder="追问本次分析证据"
-            />
-            <Button className="energy-button h-10 rounded-[8px] bg-[#68f0cf] text-[#07100d] hover:bg-[#8ff8dd]" disabled={isAsking} onClick={onAsk}>
-              {isAsking ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Bot data-icon="inline-start" />}
-              发送
-            </Button>
-          </div>
+    <div className="report-atlas">
+      <section className="atlas-panel">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <PanelHeading icon={FileText} eyebrow={`${analysis.report.source} / ${analysis.report.model}`} title="AI 报告" />
+          <a className="download-link" href={reportDownloadUrl(analysis.id)}>
+            <Download />
+            Markdown
+          </a>
         </div>
-      </Panel>
-    </section>
+        <div className="report-markdown">
+          <MarkdownDocument content={analysis.report.markdown} />
+        </div>
+      </section>
+      <section className="atlas-panel">
+        <PanelHeading icon={MessageSquare} eyebrow="Context" title="证据追问" />
+        <div className="chat-scroll">
+          {chat.map((item, index) => (
+            <ChatBubble key={`${item.role}-${index}`} item={item} />
+          ))}
+        </div>
+        <div className="chat-compose">
+          <Input
+            className="h-10 rounded-[8px] border-white/10 bg-white/[0.045]"
+            placeholder="追问本次分析证据"
+            value={question}
+            onChange={(event) => onQuestion(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onAsk();
+            }}
+          />
+          <Button className="rounded-[8px] bg-[#e8f3ff] text-[#050812] hover:bg-[#f4f8ff]" disabled={isAsking} onClick={onAsk}>
+            {isAsking ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Bot data-icon="inline-start" />}
+            发送
+          </Button>
+        </div>
+      </section>
+    </div>
   );
 }
 
-function MetricsStrip({
-  metrics,
-}: {
-  metrics: Array<{ label: string; value: string | number; suffix: string; icon: typeof Activity; tone: string }>;
-}) {
+function OpsAtlas({ dashboard, onRefreshDashboard }: { dashboard: DashboardStats | null; onRefreshDashboard: () => void }) {
   return (
-    <section className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
-      {metrics.map((metric) => {
-        const Icon = metric.icon;
-        return (
-          <div key={metric.label} className="min-h-[108px] rounded-[8px] border border-white/10 bg-white/[0.045] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.05)]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs uppercase tracking-[0.2em] text-[#798982]">{metric.label}</span>
-              <Icon className={metric.tone} />
+    <section className="atlas-panel">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <PanelHeading icon={Activity} eyebrow="Operations" title="运行记录" />
+        <Button className="rounded-[8px]" onClick={onRefreshDashboard} type="button" variant="outline">
+          <RefreshCw data-icon="inline-start" />
+          刷新
+        </Button>
+      </div>
+      <div className="recent-grid">
+        {dashboard?.recent.length ? (
+          dashboard.recent.map((item) => (
+            <div key={item.id} className="recent-run">
+              <div>
+                <strong>{item.sequence_name}</strong>
+                <span>{item.candidate_source}</span>
+              </div>
+              <Badge className="border-[#9ed8ff]/35 bg-[#9ed8ff]/10 text-[#dff2ff]" variant="outline">
+                {Math.round(item.confidence_score)}
+              </Badge>
             </div>
-            <div className="mt-5 flex items-end gap-2">
-              <span className="font-mono text-3xl font-semibold text-white">{metric.value}</span>
-              <span className="pb-1 text-xs text-[#8c9c95]">{metric.suffix}</span>
-            </div>
-          </div>
-        );
-      })}
+          ))
+        ) : (
+          <EmptyState icon={Clock3} title="暂无历史任务" text="完成分析后会在这里记录最近任务。" compact />
+        )}
+      </div>
     </section>
   );
 }
 
-function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
+function PanelHeading({ eyebrow, icon: Icon, title }: { eyebrow: string; icon: LucideIcon; title: string }) {
   return (
-    <section className={`holo-panel interactive-panel rounded-[8px] border border-white/10 bg-[#0e100e]/88 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.06),0_24px_80px_rgba(0,0,0,.28)] backdrop-blur-xl ${className}`}>
-      {children}
-    </section>
+    <div className="panel-heading">
+      <span>
+        <Icon />
+      </span>
+      <div>
+        <p>{eyebrow}</p>
+        <h3>{title}</h3>
+      </div>
+    </div>
   );
 }
 
-function PanelHeader({
-  action,
-  eyebrow,
+function LensMetric({ label, suffix, value }: { label: string; suffix: string; value: string | number }) {
+  return (
+    <div className="lens-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{suffix}</small>
+    </div>
+  );
+}
+
+function EvidenceMeter({ label, score, value }: { label: string; score: number; value: string }) {
+  const normalized = Math.max(0, Math.min(100, score));
+  return (
+    <div className="lens-meter">
+      <div>
+        <span>{label}</span>
+        <strong>{Math.round(normalized)}%</strong>
+      </div>
+      <p>{value}</p>
+      <i>
+        <b style={{ width: `${normalized}%` }} />
+      </i>
+    </div>
+  );
+}
+
+function CompositionWave({ composition }: { composition: Record<"A" | "T" | "G" | "C" | "U" | "N", number> }) {
+  const bases: Array<keyof typeof composition> = ["A", "T", "G", "C", "U", "N"];
+  return (
+    <div className="composition-wave">
+      {bases.map((base) => (
+        <div key={base}>
+          <span style={{ height: `${Math.max(10, composition[base] || 0)}%` }} />
+          <small>{base}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MicroReadout({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="micro-readout">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function EmptyState({
+  compact = false,
   icon: Icon,
+  text,
   title,
 }: {
-  action?: ReactNode;
-  eyebrow: string;
-  icon: typeof Dna;
+  compact?: boolean;
+  icon: LucideIcon;
+  text: string;
   title: string;
 }) {
   return (
-    <div className="mb-4 flex items-start justify-between gap-4">
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="grid size-10 shrink-0 place-items-center rounded-[8px] border border-white/10 bg-white/[0.045] text-[#68f0cf]">
-          <Icon />
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs uppercase tracking-[0.22em] text-[#7e8f87]">{eyebrow}</div>
-          <h2 className="mt-1 text-lg font-semibold leading-tight text-white">{title}</h2>
-        </div>
-      </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
-    </div>
-  );
-}
-
-function BrandLockup() {
-  return (
-    <div className="flex items-center gap-3">
-      <BrandMark />
-      <div>
-        <div className="text-base font-semibold text-white">BioSeqMind-AI</div>
-        <div className="text-xs uppercase tracking-[0.18em] text-[#7f928a]">Sequence Intelligence</div>
-      </div>
-    </div>
-  );
-}
-
-function BrandMark() {
-  return (
-    <div className="relative grid size-11 place-items-center rounded-[8px] border border-[#68f0cf]/30 bg-[#68f0cf]/10 text-[#68f0cf] shadow-[0_0_40px_rgba(104,240,207,.12)]">
-      <Dna className="size-5" />
-      <span className="absolute -right-1 -top-1 size-2 rounded-full bg-[#ffd166]" />
-    </div>
-  );
-}
-
-function NavButton({
-  item,
-  onClick,
-  selected,
-}: {
-  item: (typeof navItems)[number];
-  onClick: () => void;
-  selected: boolean;
-}) {
-  const Icon = item.icon;
-  return (
-    <button
-      className={`group flex w-full items-center gap-3 rounded-[8px] border px-3 py-3 text-left transition ${
-        selected
-          ? "border-[#68f0cf]/45 bg-[#68f0cf]/12 text-white shadow-[inset_0_1px_0_rgba(255,255,255,.06)]"
-          : "border-transparent text-[#8d9d95] hover:border-white/10 hover:bg-white/[0.04] hover:text-white"
-      }`}
-      onClick={onClick}
-      type="button"
-    >
-      <div className={`grid size-8 place-items-center rounded-[7px] ${selected ? "bg-[#68f0cf]/15 text-[#68f0cf]" : "bg-white/[0.04] text-[#73827c]"}`}>
-        <Icon />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{item.label}</div>
-        <div className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-[#66756f]">{item.eyebrow}</div>
-      </div>
-      <ChevronRight className={`transition ${selected ? "text-[#68f0cf]" : "text-transparent group-hover:text-[#73827c]"}`} />
-    </button>
-  );
-}
-
-function PipelineMini({ analysis, isAnalyzing }: { analysis: AnalysisResult | null; isAnalyzing: boolean }) {
-  const done = new Set((analysis?.timeline ?? []).map((step) => step.key));
-  return (
-    <div>
-      <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.2em] text-[#77857f]">
-        <span>Pipeline</span>
-        {isAnalyzing ? <Loader2 className="animate-spin text-[#68f0cf]" /> : <BadgeCheck className="text-[#68f0cf]" />}
-      </div>
-      <div className="space-y-2">
-        {pipelineBlueprint.slice(1).map((step) => {
-          const complete = done.has(step.key);
-          return (
-            <div key={step.key} className="flex items-center gap-2 text-xs">
-              <span className={`size-1.5 rounded-full ${complete ? "bg-[#68f0cf]" : "bg-white/20"}`} />
-              <span className={complete ? "text-[#dffff4]" : "text-[#7d8d86]"}>{step.label}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function StatusPill({
-  icon: Icon,
-  label,
-  tone,
-  value,
-}: {
-  icon: typeof Server;
-  label: string;
-  tone: "green" | "amber";
-  value: string;
-}) {
-  const color = tone === "green" ? "text-[#68f0cf] border-[#68f0cf]/25 bg-[#68f0cf]/10" : "text-[#ffd166] border-[#ffd166]/25 bg-[#ffd166]/10";
-  return (
-    <div className={`flex h-10 items-center gap-2 rounded-[8px] border px-3 ${color}`}>
+    <div className={compact ? "empty-state compact" : "empty-state"}>
       <Icon />
-      <span className="text-xs text-[#8fa099]">{label}</span>
-      <span className="text-sm font-medium text-white">{value}</span>
-    </div>
-  );
-}
-
-function ControlButton({ icon: Icon, label, meta, onClick }: { icon: typeof FileText; label: string; meta: string; onClick: () => void }) {
-  return (
-    <button
-      className="flex min-h-[70px] items-center gap-3 rounded-[8px] border border-white/10 bg-white/[0.035] p-3 text-left transition hover:border-[#68f0cf]/35 hover:bg-[#68f0cf]/[0.06]"
-      onClick={onClick}
-      type="button"
-    >
-      <div className="grid size-9 place-items-center rounded-[8px] bg-white/[0.06] text-[#68f0cf]">
-        <Icon />
-      </div>
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-white">{label}</div>
-        <div className="mt-1 truncate text-xs text-[#86978f]">{meta}</div>
-      </div>
-    </button>
-  );
-}
-
-function ModePicker({ analysisMode, onAnalysisMode }: { analysisMode: AnalysisMode; onAnalysisMode: (mode: AnalysisMode) => void }) {
-  const items: Array<{ mode: AnalysisMode; label: string; icon: typeof Zap; meta: string }> = [
-    { mode: "fast_nn", label: "快速模式", icon: Zap, meta: "Fast NN" },
-    { mode: "end_to_end", label: "全量模式", icon: Server, meta: "End-to-end" },
-  ];
-  return (
-    <div className="grid gap-2">
-      {items.map((item) => {
-        const Icon = item.icon;
-        const selected = analysisMode === item.mode;
-        return (
-          <button
-            key={item.mode}
-            className={`flex min-h-[62px] items-center gap-3 rounded-[8px] border p-3 text-left transition ${
-              selected ? "border-[#ffd166]/45 bg-[#ffd166]/10 text-white" : "border-white/10 bg-white/[0.035] text-[#a9b9b1] hover:bg-white/[0.06]"
-            }`}
-            onClick={() => onAnalysisMode(item.mode)}
-            type="button"
-          >
-            <Icon className={selected ? "text-[#ffd166]" : "text-[#73827c]"} />
-            <span>
-              <span className="block text-sm font-medium">{item.label}</span>
-              <span className="mt-1 block text-xs text-[#7d8d86]">{item.meta}</span>
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function DataTile({ accent, label, value }: { accent: "green" | "amber" | "blue" | "rose"; label: string; value: string | number }) {
-  const color = {
-    green: "text-[#68f0cf]",
-    amber: "text-[#ffd166]",
-    blue: "text-[#86b7ff]",
-    rose: "text-[#ff8fb3]",
-  }[accent];
-  return (
-    <div className="min-h-[86px] rounded-[8px] border border-white/10 bg-white/[0.035] p-3">
-      <div className="text-xs text-[#7f9189]">{label}</div>
-      <div className={`mt-3 truncate text-lg font-semibold ${color}`}>{value}</div>
-    </div>
-  );
-}
-
-function ReadinessRow({ active, label, value }: { active: boolean; label: string; value: string }) {
-  return (
-    <div className="grid grid-cols-[1fr_auto] items-center gap-3 border-t border-white/10 pt-3">
-      <div>
-        <div className="text-xs uppercase tracking-[0.16em] text-[#77857f]">{label}</div>
-        <div className="mt-1 text-sm font-medium text-white">{value}</div>
-      </div>
-      <div className={`h-1.5 w-24 overflow-hidden rounded-full ${active ? "bg-[#e7d8b1]/18" : "bg-white/10"}`}>
-        <div className={`h-full rounded-full transition-all duration-700 ${active ? "w-full bg-[#e7d8b1]" : "w-1/5 bg-white/20"}`} />
-      </div>
-    </div>
-  );
-}
-
-function EvidenceLine({ label, score, value }: { label: string; score: number; value: string }) {
-  const normalized = Math.max(0, Math.min(100, score));
-  return (
-    <div className="rounded-[8px] border border-white/10 bg-white/[0.035] p-3">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-white">{label}</span>
-        <span className="font-mono text-xs text-[#ffd166]">{Math.round(normalized)}%</span>
-      </div>
-      <div className="mt-2 truncate text-xs text-[#8d9d95]">{value}</div>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full bg-[#68f0cf] transition-[width] duration-700" style={{ width: `${normalized}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function PipelineNode({
-  active,
-  index,
-  item,
-  step,
-}: {
-  active: boolean;
-  index: number;
-  item: (typeof pipelineBlueprint)[number];
-  step?: PipelineStep;
-}) {
-  const Icon = item.icon;
-  const complete = Boolean(step);
-  return (
-    <div className={`relative min-h-[164px] rounded-[8px] border p-3 ${active ? "running-node" : ""} ${complete ? "border-[#68f0cf]/35 bg-[#68f0cf]/[0.07]" : "border-white/10 bg-white/[0.035]"}`}>
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-xs text-[#71827b]">{String(index + 1).padStart(2, "0")}</span>
-        {active ? <Loader2 className="animate-spin text-[#ffd166]" /> : complete ? <CheckCircle2 className="text-[#68f0cf]" /> : <Icon className="text-[#596861]" />}
-      </div>
-      <div className="mt-8 text-sm font-semibold text-white">{item.label}</div>
-      <div className="mt-2 min-h-[34px] text-xs leading-5 text-[#8c9c95]">{step?.detail ?? "pending"}</div>
-      <div className="mt-3 font-mono text-xs text-[#ffd166]">{step ? `${step.elapsed_ms} ms` : "00 ms"}</div>
+      <h3>{title}</h3>
+      <p>{text}</p>
     </div>
   );
 }
 
 function ChatBubble({ item }: { item: { role: "user" | "assistant"; content: string; meta?: string } }) {
-  const isUser = item.role === "user";
+  const user = item.role === "user";
   return (
-    <div className={`rounded-[8px] border p-3 text-sm leading-6 ${isUser ? "ml-8 border-[#86b7ff]/30 bg-[#86b7ff]/10 text-[#eef5ff]" : "mr-8 border-[#68f0cf]/24 bg-[#68f0cf]/[0.06] text-[#dcebe5]"}`}>
-      <div className="mb-2 flex items-center gap-2 text-xs text-[#82938b]">
-        {isUser ? <MessageSquare /> : <Bot />}
-        {isUser ? "用户" : item.meta}
+    <div className={user ? "chat-bubble user" : "chat-bubble"}>
+      <div className="chat-bubble-header">
+        <span>{user ? "You" : "BioSeqMind AI"}</span>
+        {item.meta ? <small>{item.meta}</small> : null}
       </div>
-      {isUser ? <p className="whitespace-pre-wrap">{item.content}</p> : <MarkdownPreview compact markdown={item.content} />}
+      <MarkdownDocument compact content={item.content} />
     </div>
   );
 }
 
-function RiskBadge({ risk }: { risk: "Low" | "Medium" | "High" }) {
-  const className =
-    risk === "High"
-      ? "border-[#ff8fb3]/35 bg-[#ff8fb3]/10 text-[#ffdce8]"
-      : risk === "Medium"
-        ? "border-[#ffd166]/35 bg-[#ffd166]/10 text-[#ffe2a3]"
-        : "border-[#68f0cf]/35 bg-[#68f0cf]/10 text-[#dffff4]";
-  return (
-    <Badge className={className} variant="outline">
-      {risk} risk
-    </Badge>
-  );
+function MarkdownDocument({ compact = false, content }: { compact?: boolean; content: string }) {
+  return <div className={compact ? "markdown-render compact" : "markdown-render"}>{renderMarkdownBlocks(content)}</div>;
 }
 
-function SequenceSparkline({ text }: { text: string }) {
-  const clean = text.replace(/>.*$/gm, "").replace(/\s/g, "").toUpperCase().slice(0, 96);
-  const bases = clean || "ATGCGTACGTTAGCTAGCTAGGCTTACGATCGATCGGATCCGATCGTACGATCG";
-  const heights: Record<string, number> = { A: 34, T: 52, G: 72, C: 44, U: 64, N: 24 };
-  return (
-    <div className="flex h-full items-end gap-[3px]">
-      {bases.split("").map((base, index) => (
-        <span
-          key={`${base}-${index}`}
-          className="seq-bar flex-1 rounded-full bg-[#d9cda8]"
-          style={{
-            height: `${heights[base] ?? 20}%`,
-            opacity: 0.16 + ((index % 7) * 0.055),
-            animationDelay: `${index * 18}ms`,
-          }}
-          title={base}
-        />
-      ))}
-    </div>
-  );
-}
+function renderMarkdownBlocks(content: string): ReactNode[] {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
 
-function DnaBackdrop() {
-  return (
-    <div className="helix-field absolute right-[-120px] top-24 hidden h-[620px] w-[520px] opacity-35 lg:block">
-      {Array.from({ length: 18 }).map((_, index) => (
-        <div
-          key={index}
-          className="helix-strand absolute left-1/2 top-0 h-[520px] w-px origin-bottom bg-[linear-gradient(180deg,transparent,#68f0cf,transparent)]"
-          style={{ transform: `rotate(${index * 10}deg) translateX(${Math.sin(index) * 16}px)` }}
-        />
-      ))}
-      <div className="absolute inset-y-0 left-1/2 w-px bg-white/10" />
-    </div>
-  );
-}
-
-function EmptyState({ icon: Icon = Search, text }: { icon?: typeof Search; text: string }) {
-  return (
-    <div className="grid min-h-[180px] place-items-center rounded-[8px] border border-dashed border-white/15 bg-white/[0.025] p-8 text-center">
-      <div>
-        <div className="mx-auto grid size-10 place-items-center rounded-[8px] border border-white/10 bg-white/[0.04] text-[#77857f]">
-          <Icon />
-        </div>
-        <div className="mt-3 text-sm text-[#9aaba3]">{text}</div>
-      </div>
-    </div>
-  );
-}
-
-function MarkdownPreview({ compact = false, markdown }: { compact?: boolean; markdown: string }) {
-  const source = markdown
-    .trim()
-    .replace(/^```(?:markdown|md)?\s*/i, "")
-    .replace(/```\s*$/i, "");
-  const lines = source.split("\n");
-  const nodes: ReactNode[] = [];
-  let listItems: string[] = [];
-  let tableLines: string[] = [];
-
-  function flushList(key: string) {
-    if (!listItems.length) return;
-    nodes.push(
-      <ul key={key} className="mb-3 space-y-1 pl-5 text-[#c7d8d0]">
-        {listItems.map((item, index) => (
-          <li key={`${key}-${index}`} className="list-disc">
-            {renderInline(item)}
-          </li>
-        ))}
-      </ul>,
-    );
-    listItems = [];
-  }
-
-  function flushTable(key: string) {
-    if (!tableLines.length) return;
-    nodes.push(renderMarkdownTable(tableLines, key));
-    tableLines = [];
-  }
-
-  lines.forEach((rawLine, index) => {
-    const line = rawLine.trimEnd();
-    if (line.includes("|") && !/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(line)) {
-      tableLines.push(line);
-      return;
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
     }
-    flushTable(`table-${index}`);
 
-    if (/^\s*[-*]\s+/.test(line)) {
-      listItems.push(line.replace(/^\s*[-*]\s+/, ""));
-      return;
-    }
-    flushList(`list-${index}`);
-
-    if (line.startsWith("### ")) {
-      nodes.push(
-        <h4 key={index} className="mb-2 mt-4 text-sm font-semibold text-[#68f0cf]">
-          {renderInline(line.slice(4))}
-        </h4>,
+    if (trimmed.startsWith("```")) {
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      index += index < lines.length ? 1 : 0;
+      blocks.push(
+        <pre className="markdown-code" key={`code-${index}`}>
+          <code>{code.join("\n")}</code>
+        </pre>,
       );
-      return;
+      continue;
     }
-    if (line.startsWith("## ")) {
-      nodes.push(
-        <h3 key={index} className="mb-2 mt-5 text-base font-semibold text-[#68f0cf]">
-          {renderInline(line.slice(3))}
-        </h3>,
+
+    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      const level = heading[1].length;
+      const HeadingTag = `h${Math.min(level + 1, 5)}` as "h2" | "h3" | "h4" | "h5";
+      blocks.push(<HeadingTag key={`heading-${index}`}>{renderInlineMarkdown(heading[2], `heading-${index}`)}</HeadingTag>);
+      index += 1;
+      continue;
+    }
+
+    if (isMarkdownTableStart(lines, index)) {
+      const header = splitMarkdownTableRow(lines[index]);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        rows.push(splitMarkdownTableRow(lines[index]));
+        index += 1;
+      }
+      blocks.push(
+        <div className="markdown-table-wrap" key={`table-${index}`}>
+          <table>
+            <thead>
+              <tr>
+                {header.map((cell, cellIndex) => (
+                  <th key={`head-${cellIndex}`}>{renderInlineMarkdown(cell, `head-${index}-${cellIndex}`)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={`row-${rowIndex}`}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={`cell-${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(cell, `cell-${index}-${rowIndex}-${cellIndex}`)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
       );
-      return;
+      continue;
     }
-    if (line.startsWith("# ")) {
-      nodes.push(
-        <h2 key={index} className="mb-4 text-xl font-semibold text-white">
-          {renderInline(line.slice(2))}
-        </h2>,
-      );
-      return;
-    }
-    if (line.startsWith("> ")) {
-      nodes.push(
-        <blockquote key={index} className="mb-3 rounded-[8px] border-l-2 border-[#68f0cf]/50 bg-[#68f0cf]/[0.06] px-3 py-2 text-[#c7d8d0]">
-          {renderInline(line.slice(2))}
-        </blockquote>,
-      );
-      return;
-    }
-    nodes.push(line.trim() ? <p key={index} className="mb-2">{renderInline(line)}</p> : <div key={index} className="h-2" />);
-  });
-  flushTable("table-end");
-  flushList("list-end");
 
-  return (
-    <article
-      className={`overflow-y-auto rounded-[8px] border border-white/10 bg-[#050606] text-sm leading-7 text-[#c7d8d0] ${
-        compact ? "max-h-none border-0 bg-transparent p-0" : "max-h-[650px] p-5"
-      }`}
-    >
-      {nodes}
-    </article>
-  );
-}
-
-function renderInline(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-  return parts.map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
-    }
-    if (part.startsWith("`") && part.endsWith("`")) {
-      return <code key={index} className="rounded bg-white/10 px-1 py-0.5 font-mono text-xs text-[#68f0cf]">{part.slice(1, -1)}</code>;
-    }
-    return <span key={index}>{part}</span>;
-  });
-}
-
-function renderMarkdownTable(rows: string[], key: string) {
-  const cleanedRows = rows.filter((row) => !/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(row));
-  const cells = cleanedRows.map((row) =>
-    row
-      .replace(/^\||\|$/g, "")
-      .split("|")
-      .map((cell) => cell.trim()),
-  );
-  if (cells.length < 2) return null;
-
-  const [header, ...body] = cells;
-  return (
-    <div key={key} className="mb-4 overflow-hidden rounded-[8px] border border-white/10">
-      <table className="w-full text-left text-xs">
-        <thead className="bg-white/[0.06] text-white">
-          <tr>
-            {header.map((cell, index) => <th key={index} className="px-3 py-2 font-medium">{renderInline(cell)}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {body.map((row, rowIndex) => (
-            <tr key={rowIndex} className="border-t border-white/10">
-              {row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-2 text-[#c7d8d0]">{renderInline(cell)}</td>)}
-            </tr>
+    if (/^[-*]\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ul key={`ul-${index}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`li-${itemIndex}`}>{renderInlineMarkdown(item, `ul-${index}-${itemIndex}`)}</li>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </ul>,
+      );
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^\d+\.\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ol key={`ol-${index}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`oli-${itemIndex}`}>{renderInlineMarkdown(item, `ol-${index}-${itemIndex}`)}</li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quotes: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quotes.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(<blockquote key={`quote-${index}`}>{renderInlineMarkdown(quotes.join(" "), `quote-${index}`)}</blockquote>);
+      continue;
+    }
+
+    const paragraph: string[] = [];
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !lines[index].trim().startsWith("```") &&
+      !/^(#{1,4})\s+/.test(lines[index].trim()) &&
+      !/^[-*]\s+/.test(lines[index].trim()) &&
+      !/^\d+\.\s+/.test(lines[index].trim()) &&
+      !/^>\s?/.test(lines[index].trim()) &&
+      !isMarkdownTableStart(lines, index)
+    ) {
+      paragraph.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(paragraph.join(" "), `p-${index}`)}</p>);
+  }
+
+  return blocks;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) {
+      nodes.push(text.slice(cursor, match.index));
+    }
+    const token = match[0];
+    const key = `${keyPrefix}-${match.index}`;
+    if (token.startsWith("**")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else {
+      const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      const href = link?.[2] ?? "#";
+      const safeHref = /^(https?:|mailto:)/i.test(href) ? href : "#";
+      nodes.push(
+        <a href={safeHref} key={key} rel="noreferrer" target="_blank">
+          {link?.[1] ?? token}
+        </a>,
+      );
+    }
+    cursor = match.index + token.length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+  return nodes;
+}
+
+function isMarkdownTableStart(lines: string[], index: number): boolean {
+  return Boolean(
+    lines[index]?.includes("|") &&
+      lines[index + 1] &&
+      /^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1].trim()),
   );
 }
 
-function inferInputState(text: string, file: File | null) {
-  const clean = text.replace(/>.*$/gm, "").replace(/\s/g, "").toUpperCase();
-  const hasHeader = text.trim().startsWith(">");
-  const hasU = clean.includes("U");
-  const hasT = clean.includes("T");
-  const kind = hasU && !hasT ? "RNA" : hasT && !hasU ? "DNA" : clean ? "Mixed" : file ? "FASTA" : "Idle";
-  return { hasHeader, kind };
+function splitMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+type SequenceSignal = {
+  gc: number;
+  hasHeader: boolean;
+  kind: "DNA" | "RNA" | "Mixed" | "Unknown";
+  length: number;
+  ratios: Record<"A" | "T" | "G" | "C" | "U" | "N", number>;
+};
+
+function inspectSequence(text: string): SequenceSignal {
+  const hasHeader = /^>/m.test(text);
+  const raw = text
+    .replace(/^>.*$/gm, "")
+    .replace(/[^A-Za-z]/g, "")
+    .toUpperCase();
+  const length = raw.length;
+  const counts = {
+    A: countBase(raw, "A"),
+    T: countBase(raw, "T"),
+    G: countBase(raw, "G"),
+    C: countBase(raw, "C"),
+    U: countBase(raw, "U"),
+    N: countBase(raw, "N"),
+  };
+  const ratios = {
+    A: ratio(counts.A, length),
+    T: ratio(counts.T, length),
+    G: ratio(counts.G, length),
+    C: ratio(counts.C, length),
+    U: ratio(counts.U, length),
+    N: ratio(counts.N, length),
+  };
+  const kind = !length ? "Unknown" : counts.U > 0 && counts.T === 0 ? "RNA" : counts.T > 0 && counts.U === 0 ? "DNA" : "Mixed";
+  return {
+    gc: ratio(counts.G + counts.C, length),
+    hasHeader,
+    kind,
+    length,
+    ratios,
+  };
 }
 
-function formatEvalue(value: number) {
+function countBase(sequence: string, base: string): number {
+  return sequence.split(base).length - 1;
+}
+
+function ratio(count: number, total: number): number {
+  return total ? Math.round((count / total) * 100) : 0;
+}
+
+function formatEvalue(value: number): string {
   if (value === 0) return "0";
-  if (!Number.isFinite(value)) return String(value);
-  return value.toExponential(1);
+  if (value < 0.001) return value.toExponential(2);
+  return value.toString();
 }
