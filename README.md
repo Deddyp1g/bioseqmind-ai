@@ -2,6 +2,14 @@
 
 BioSeqMind-AI 是一个完整可运行的科研 AI Dashboard 原型：用户上传 DNA/RNA FASTA 后，后端执行序列质控、geNomad 识别、NCBI BLAST/E-utilities 查询、融合评分，并调用 DeepSeek 生成 Markdown 报告和追问回答。
 
+## 当前功能状态
+
+- 前端已重做为电影感生物科研工作台，首屏包含可交互显微镜视窗式 3D DNA 双螺旋；分析开始后，中央区域切换为证据、图表、报告和追问结果面板。
+- 输入区支持粘贴 DNA/RNA、上传 FASTA，并提供 `Sample` 按钮；样例文件来自 `frontend/public/samples/sequence.fasta`，当前为 `NC_045512.2` SARS-CoV-2 参考序列。
+- 长序列输入使用内部滚动，不会把页面和分析结果挤到下方。
+- DeepSeek 生成的科研报告和追问回答会在前端渲染为排版后的 Markdown 内容，避免直接显示 Markdown 源码。
+- 仓库包含课程论文成稿 `docs/BioSeqMind-AI课程论文.docx`，内容基于本项目当前架构、功能和验证结果整理。
+
 ## 技术栈
 
 - 前端：Next.js + TypeScript + Tailwind CSS + shadcn/ui + ECharts
@@ -77,6 +85,8 @@ Windows/GPU 迁移说明见 [docs/windows-gpu-migration.md](docs/windows-gpu-mig
 运行模式、宿主机接手、快速模式和旧版完整 geNomad 模式说明见 [docs/deployment-modes.md](docs/deployment-modes.md)。
 
 详细系统设计、技术架构、分析工作流、安全边界、测试验证和后续路线见 [docs/design-and-technical-report.md](docs/design-and-technical-report.md)。
+
+课程论文 Word 成稿见 [docs/BioSeqMind-AI课程论文.docx](docs/BioSeqMind-AI课程论文.docx)。
 
 ## 开源内容说明
 
